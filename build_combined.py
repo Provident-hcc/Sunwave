@@ -1,4 +1,5 @@
 import json, math, os, pandas as pd
+from datetime import datetime, timezone
 
 # ── Load general report data ──────────────────────────────────────────────────
 with open('report_data.json', 'r') as f:
@@ -219,6 +220,9 @@ try:
 except Exception as _e:
     print(f"Warning: could not load Referral Active sheet: {_e}")
     referral_rows = []
+
+# ── Build metadata ───────────────────────────────────────────────────────────
+build_info_js = json.dumps({'refreshed_at': datetime.now(timezone.utc).isoformat()})
 
 # ── Serialize ─────────────────────────────────────────────────────────────────
 general_js  = json.dumps(raw_data,     separators=(',',':'), ensure_ascii=True).replace('</', '<\\/')
@@ -487,7 +491,8 @@ h2.section-title {
 :root {
   --navy:#0a3d5c; --teal:#3dffc0; --teal-dim:rgba(61,255,192,0.12);
   --bg:#f4f6f9; --white:#fff; --border:#e1e7ef;
-  --text:#0f1923; --muted:#6b7e96;
+  --text:#2D2D2D; --muted:#6b7e96;
+  --sky:#4BBDE8;
   --red:#ef4444; --amber:#f59e0b; --blue:#3b82f6; --green:#10b981; --purple:#8b5cf6;
   --shadow:0 1px 3px rgba(10,61,92,.07),0 4px 14px rgba(10,61,92,.04);
   --shadow-h:0 4px 12px rgba(10,61,92,.11),0 8px 28px rgba(10,61,92,.07);
@@ -521,10 +526,8 @@ body {
   padding: 0 28px; display: flex; flex-wrap: wrap; row-gap: 0;
   position: sticky; top: 58px; z-index: 190;
   box-shadow: 0 2px 8px rgba(10,61,92,.05);
-  height: auto; flex-shrink: 0; overflow-x: auto; scrollbar-width: thin;
+  height: auto; flex-shrink: 0;
 }
-#tabBar::-webkit-scrollbar { height: 3px; }
-#tabBar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .tab-btn {
   padding: 12px 14px; border: none;
   border-bottom: 3px solid transparent;
@@ -751,10 +754,43 @@ h2.section-title {
   background: #fff; color: var(--navy); border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
 }
 .tabs-menu .actions button:hover { background: var(--navy); color: #fff; }
+
+/* ── Mobile responsive ── */
+@media (max-width: 1024px) {
+  body { overflow: auto; }
+  #app { overflow: visible; }
+  #main { flex-direction: column; overflow: visible; }
+  #content { overflow: visible; }
+  #filterRail {
+    width: 100%; border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    position: sticky; top: 0; z-index: 150;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(10,61,92,.06);
+    overflow: visible;
+  }
+  #filterRail h3 { display: none; }
+  #filterRail .filter-section.active .controls {
+    flex-direction: row !important; flex-wrap: wrap !important;
+    gap: 8px !important; align-items: center !important;
+  }
+  #filterRail .filter-section .view-btns { display: flex !important; gap: 4px; }
+  #filterRail .filter-section .view-btn { padding: 5px 7px !important; font-size: 9px !important; }
+  #filterRail .filter-section .period-label { min-width: 110px !important; font-size: 10px !important; }
+  #filterRail .filter-section .search-box { width: auto !important; min-width: 140px !important; }
+  #filterRail .filter-section .date-input,
+  #filterRail .filter-section select.date-input { width: auto !important; }
+  #filterRail .filter-section .export-btn { width: auto !important; }
+  .break-grid { grid-template-columns: 1fr !important; }
+}
 """
 
 # ── JavaScript ────────────────────────────────────────────────────────────────
 JS = r"""
+/* ===== Build info ===== */
+const BUILD_INFO = (function(){try{return JSON.parse(document.getElementById('buildInfo').textContent);}catch(e){return{};}})();
+
 /* ===== Data ===== */
 const RAW      = JSON.parse(document.getElementById('generalData').textContent);
 const DATE_IDX = JSON.parse(document.getElementById('dateIdx').textContent);
@@ -788,6 +824,17 @@ function gwk(d){const c=new Date(d);c.setDate(c.getDate()-c.getDay());c.setHours
 function smm(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth();}
 function swk(a,b){return gwk(a).getTime()===gwk(b).getTime();}
 function sdy(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();}
+
+function fmtSyncedAt(tsMs){
+  try{
+    const d=tsMs?new Date(tsMs):(BUILD_INFO.refreshed_at?new Date(BUILD_INFO.refreshed_at):null);
+    if(!d||isNaN(d))return'';
+    const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const MONS=['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const h=d.getHours(),m=d.getMinutes(),ap=h>=12?'PM':'AM',h12=h%12===0?12:h%12;
+    return'Synced: '+DAYS[d.getDay()]+', '+MONS[d.getMonth()]+' '+d.getDate()+', '+d.getFullYear()+' · '+String(h12).padStart(2,'0')+':'+String(m).padStart(2,'0')+' '+ap;
+  }catch(e){return'';}
+}
 
 /* ===== Sidebar nav ===== */
 function showPage(id){
@@ -827,13 +874,14 @@ function showPage(id){
   };
   const specialPages=new Set(['billing','census','marketing','opportunities','referral','crmtask','ur','clinical','operations','fieldexplorer']);
   document.getElementById('pageTitle').textContent = titles[id]||id;
-  document.getElementById('pageSub').textContent   = subs[id]||'';
+  const _sync=fmtSyncedAt();
+  document.getElementById('pageSub').textContent = _sync || (subs[id]||'');
   if(!specialPages.has(id)) renderGeneral(id);
 }
 
 function doRefresh(){
-  const btn=document.querySelector('.refresh-btn');
-  btn.textContent='Refreshing…';
+  const btn=document.querySelector('[title="Refresh data"]');
+  if(btn) btn.textContent='Refreshing…';
   setTimeout(()=>{
     if(curPage==='billing'){ renderBillingSpot();renderBillingBreakdowns();renderBillingTrend();renderBillingDetail(); }
     else if(curPage==='census'){ renderCensusSpot();renderCensusTrend();renderCensusBreakdowns(); }
@@ -846,7 +894,7 @@ function doRefresh(){
     else if(curPage==='operations'){ renderOpsHeatmap();renderOpsDetail();renderOpsMonthlyIns(); }
     else if(curPage==='fieldexplorer'){ renderFieldExplorer(); }
     else renderGeneral(curPage);
-    btn.textContent='\u27f3  Refresh';
+    if(btn) btn.innerHTML='&#8635;&nbsp; Refresh';
   },100);
 }
 
@@ -2984,8 +3032,10 @@ html = (
     # External libs
     '<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>\n'
     '<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>\n'
+    '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>\n'
 
     # Data
+    '<script type="application/json" id="buildInfo">' + build_info_js + '</script>\n'
     '<script type="application/json" id="generalData">' + general_js + '</script>\n'
     '<script type="application/json" id="dateIdx">'     + config_js  + '</script>\n'
     '<script type="application/json" id="billingData">' + billing_js + '</script>\n'
@@ -3139,8 +3189,12 @@ BG_REFRESH = ("""
           sheets[n] = r.values || []; } catch(e){ sheets[n] = []; }
       }));
       const data = transform(sheets);
-      localStorage.setItem('sunwave_data_v3', JSON.stringify({v:3, ts: Date.now(), data}));
+      const _ts = Date.now();
+      localStorage.setItem('sunwave_data_v3', JSON.stringify({v:3, ts: _ts, data}));
       console.log('[bg refresh] cache updated');
+      // Update the displayed sync timestamp on all tabs
+      const _sub = document.getElementById('pageSub');
+      if(_sub && typeof fmtSyncedAt === 'function') _sub.textContent = fmtSyncedAt(_ts);
     } catch(e){
       console.warn('[bg refresh] failed silently:', e);
     }
