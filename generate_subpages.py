@@ -42,12 +42,18 @@ if TAIL not in base:
 if TAIL not in base:
     raise RuntimeError('Could not find </body></html> in source file')
 
+HOME_URL = 'https://providentanalytics.github.io/Sunwave/'
+
 for sid, lbl, folder in SUB_NAV:
     nav = make_nav(sid)
     inject = (
         f'<script>(function(){{'
         f'var bar=document.getElementById("tabBar");'
         f'if(bar)bar.innerHTML={json.dumps(nav)};'
+        # Make brand logo / title click go to home
+        f'var brand=document.querySelector(".brand");'
+        f'if(brand){{brand.style.cursor="pointer";brand.title="Go to home";'
+        f'brand.addEventListener("click",function(){{window.location.href={json.dumps(HOME_URL)};}});}}'
         f'if(typeof showPage==="function")showPage("{sid}");'
         f'}})();</script>\n'
         f'</body>\n</html>'
@@ -59,16 +65,4 @@ for sid, lbl, folder in SUB_NAV:
         f.write(content)
     print(f'  {folder}/index.html  ({os.path.getsize(out)//1024} KB)')
 
-redirect = (
-    '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
-    '<meta charset="UTF-8">\n'
-    '<meta http-equiv="refresh" content="0;url=billing/">\n'
-    '<title>Sunwave Dashboard</title>\n'
-    '</head>\n<body>\n'
-    '<p>Redirecting to <a href="billing/">Sunwave Dashboard</a>…</p>\n'
-    '</body>\n</html>\n'
-)
-with open('index.html', 'w', encoding='utf-8') as f:
-    f.write(redirect)
-print('  index.html  (redirect → billing/)')
-print('Done.')
+print('Done. (index.html not touched — edit it separately)')
