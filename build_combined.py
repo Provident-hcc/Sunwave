@@ -3256,10 +3256,14 @@ def _make_subnav(active_id):
 print('Generating sub-pages...')
 for _sid, _lbl, _folder in _SUB_NAV:
     _nav    = _make_subnav(_sid)
+    _home = 'https://providentanalytics.github.io/Sunwave/'
     _inject = (
         f'<script>(function(){{'
         f'var bar=document.getElementById("tabBar");'
         f'if(bar)bar.innerHTML={json.dumps(_nav)};'
+        f'var brand=document.querySelector(".brand");'
+        f'if(brand){{brand.style.cursor="pointer";brand.title="Go to home";'
+        f'brand.addEventListener("click",function(){{window.location.href={json.dumps(_home)};}});}}'
         f'if(typeof showPage==="function")showPage("{_sid}");'
         f'}})();</script>\n'
         f'</body>\n</html>'
