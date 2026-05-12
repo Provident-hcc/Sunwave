@@ -3230,3 +3230,57 @@ for out in ('Sunwave_Dashboard.html', 'index.html'):
     with open(out, 'w', encoding='utf-8') as f:
         f.write(html)
 print(f"Done: {os.path.getsize('index.html')/1024/1024:.1f} MB (also wrote Sunwave_Dashboard.html)")
+
+# ── Sub-pages ──────────────────────────────────────────────────────────────────
+_SUB_NAV = [
+    ('billing',       'Billing',        'billing'),
+    ('census',        'Census',         'census'),
+    ('marketing',     'Marketing',      'marketing'),
+    ('opportunities', 'Opportunities',  'opportunities'),
+    ('referral',      'Referrals',      'referral'),
+    ('crmtask',       'CRM Tasks',      'crmtask'),
+    ('ur',            'UR',             'ur'),
+    ('clinical',      'Clinical',       'clinical'),
+    ('operations',    'Operations',     'operations'),
+    ('fieldexplorer', 'Field Explorer', 'fieldexplorer'),
+]
+
+def _make_subnav(active_id):
+    parts = []
+    for sid, lbl, folder in _SUB_NAV:
+        cls = 'tab-btn active' if sid == active_id else 'tab-btn'
+        parts.append(f'<a href="../{folder}/" class="{cls}">{lbl}</a>')
+    parts.append('<a href="../crm/" class="tab-btn">CRM</a>')
+    return ''.join(parts)
+
+print('Generating sub-pages...')
+for _sid, _lbl, _folder in _SUB_NAV:
+    _nav    = _make_subnav(_sid)
+    _inject = (
+        f'<script>(function(){{'
+        f'var bar=document.getElementById("tabBar");'
+        f'if(bar)bar.innerHTML={json.dumps(_nav)};'
+        f'if(typeof showPage==="function")showPage("{_sid}");'
+        f'}})();</script>\n'
+        f'</body>\n</html>'
+    )
+    _content = html.replace('</body>\n</html>', _inject, 1)
+    os.makedirs(_folder, exist_ok=True)
+    with open(f'{_folder}/index.html', 'w', encoding='utf-8') as _f:
+        _f.write(_content)
+    print(f'  {_folder}/index.html  ({os.path.getsize(f"{_folder}/index.html")/1024:.0f} KB)')
+
+# Overwrite root index.html with a lightweight redirect to billing/
+_redirect = (
+    '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
+    '<meta charset="UTF-8">\n'
+    '<meta http-equiv="refresh" content="0;url=billing/">\n'
+    '<title>Sunwave Dashboard</title>\n'
+    '</head>\n<body>\n'
+    '<p>Redirecting to <a href="billing/">Sunwave Dashboard</a>…</p>\n'
+    '</body>\n</html>\n'
+)
+with open('index.html', 'w', encoding='utf-8') as _f:
+    _f.write(_redirect)
+print('  index.html  (redirect → billing/)')
+print('Sub-pages done.')
