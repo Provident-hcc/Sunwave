@@ -35,20 +35,33 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min
 .tnav{padding:12px 14px;border:none;border-bottom:3px solid transparent;background:none;font-family:'DM Sans',sans-serif;font-size:12.5px;font-weight:500;color:var(--muted);cursor:pointer;white-space:nowrap;transition:all .2s;margin-bottom:-1px}
 .tnav:hover{color:var(--navy)}
 .tnav.active{color:var(--navy);border-bottom-color:var(--teal);font-weight:700}
-/* Filters bar */
-.filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:14px 28px;background:var(--white);border-bottom:1px solid var(--border);position:sticky;top:104px;z-index:180}
-.filt-grp{display:flex;align-items:center;gap:6px;padding:0 12px;border-right:1px solid var(--border)}
-.filt-grp:last-child{border-right:none}
-.filt-lbl{font-family:'Space Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:700}
-.filt-btn{padding:6px 11px;border:1px solid var(--border);background:#fff;border-radius:5px;font-family:'Space Mono',monospace;font-size:10px;font-weight:700;color:var(--muted);cursor:pointer;letter-spacing:.04em;transition:all .15s}
+/* App body: filter rail + content side by side */
+.app-body{display:flex;align-items:flex-start;min-height:calc(100vh - 104px)}
+/* Filter rail — left sidebar */
+.filters{width:200px;min-width:200px;flex-shrink:0;display:flex;flex-direction:column;gap:0;padding:0;background:var(--white);border-right:1px solid var(--border);position:sticky;top:104px;height:calc(100vh - 104px);overflow-y:auto;z-index:100}
+.filters-inner{padding:14px 14px 20px;display:flex;flex-direction:column;gap:0}
+.filt-grp{display:flex;flex-direction:column;gap:6px;padding:12px 0;border-bottom:1px solid var(--border)}
+.filt-grp:last-child{border-bottom:none}
+.filt-lbl{font-family:'Space Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:2px}
+.filt-btn{padding:6px 10px;border:1px solid var(--border);background:#fff;border-radius:5px;font-family:'Space Mono',monospace;font-size:10px;font-weight:700;color:var(--muted);cursor:pointer;letter-spacing:.04em;transition:all .15s;text-align:left;width:100%}
 .filt-btn:hover{background:rgba(10,61,92,.07);color:var(--navy)}
 .filt-btn.active{background:var(--navy);color:#fff;border-color:var(--navy)}
-.filt-sel{padding:6px 10px;border:1px solid var(--border);background:#fff;border-radius:5px;font-family:'Space Mono',monospace;font-size:11px;color:var(--navy);outline:none}
+.filt-sel{padding:6px 8px;border:1px solid var(--border);background:#fff;border-radius:5px;font-family:'Space Mono',monospace;font-size:11px;color:var(--navy);outline:none;width:100%}
 .filt-sel:focus{border-color:var(--navy)}
-.filt-sel[multiple]{min-height:32px;max-height:32px;overflow-y:auto}
-.filt-sel[multiple]:focus{max-height:200px}
+.filt-sel[multiple]{min-height:32px;max-height:120px;overflow-y:auto}
 /* Tab panels */
-.tab-panel{display:none;padding:22px 28px}.tab-panel.active{display:block}
+.tab-content{flex:1;min-width:0}
+.tab-panel{display:none;padding:22px 24px}.tab-panel.active{display:block}
+/* Mobile: stack filter above content */
+@media(max-width:768px){
+  .app-body{flex-direction:column}
+  .filters{width:100%;min-width:0;height:auto;position:static;border-right:none;border-bottom:1px solid var(--border)}
+  .filters-inner{flex-direction:row;flex-wrap:wrap;gap:8px;padding:12px 16px}
+  .filt-grp{border-bottom:none;border-right:1px solid var(--border);padding:0 12px;flex-direction:row;align-items:center;gap:5px;flex-wrap:wrap}
+  .filt-grp:last-child{border-right:none}
+  .filt-btn{width:auto}
+  .filt-sel{width:auto;min-width:120px}
+}
 /* KPIs */
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin-bottom:18px}
 .kpi{background:var(--white);border:1px solid var(--border);border-radius:12px;padding:16px 18px;box-shadow:var(--shadow);position:relative;overflow:hidden}
@@ -187,48 +200,54 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
   <button class="tnav" data-tab="trends">Activity Trends</button>
 </nav>
 
-<!-- Filters -->
+<!-- App body: filter rail left + tab content right -->
+<div class="app-body">
+
 <div class="filters">
-  <div class="filt-grp">
-    <span class="filt-lbl">Period</span>
-    <button class="filt-btn" data-period="7D">7D</button>
-    <button class="filt-btn active" data-period="30D">30D</button>
-    <button class="filt-btn" data-period="90D">90D</button>
-    <button class="filt-btn" data-period="YTD">YTD</button>
-    <button class="filt-btn" data-period="ALL">ALL</button>
-  </div>
-  <div class="filt-grp">
-    <span class="filt-lbl">Outcome</span>
-    <select class="filt-sel" id="outcomeSel">
-      <option value="">All</option>
-      <option>Active</option>
-      <option>Scheduled</option>
-      <option>Admitted</option>
-      <option>AdmittedLegacy</option>
-      <option>Lost</option>
-      <option>Abandoned</option>
-    </select>
-  </div>
-  <div class="filt-grp">
-    <span class="filt-lbl">User</span>
-    <select class="filt-sel" id="userSel" multiple style="min-width:170px"></select>
-  </div>
-  <div class="filt-grp">
-    <span class="filt-lbl">View</span>
-    <button class="filt-btn active" data-view="human">Human Only</button>
-    <button class="filt-btn" data-view="all">+ Workflow</button>
+  <div class="filters-inner">
+    <div class="filt-grp">
+      <span class="filt-lbl">Period</span>
+      <button class="filt-btn" data-period="7D">7D</button>
+      <button class="filt-btn active" data-period="30D">30D</button>
+      <button class="filt-btn" data-period="90D">90D</button>
+      <button class="filt-btn" data-period="YTD">YTD</button>
+      <button class="filt-btn" data-period="ALL">ALL</button>
+    </div>
+    <div class="filt-grp">
+      <span class="filt-lbl">Outcome</span>
+      <select class="filt-sel" id="outcomeSel">
+        <option value="">All</option>
+        <option>Active</option>
+        <option>Scheduled</option>
+        <option>Admitted</option>
+        <option>AdmittedLegacy</option>
+        <option>Lost</option>
+        <option>Abandoned</option>
+      </select>
+    </div>
+    <div class="filt-grp">
+      <span class="filt-lbl">User</span>
+      <select class="filt-sel" id="userSel" multiple></select>
+    </div>
+    <div class="filt-grp">
+      <span class="filt-lbl">View</span>
+      <button class="filt-btn active" data-view="human">Human Only</button>
+      <button class="filt-btn" data-view="all">+ Workflow</button>
+    </div>
   </div>
 </div>
 
-<!-- Tab panels -->
-<div id="tab-overview"      class="tab-panel active"></div>
-<div id="tab-pipeline"      class="tab-panel"></div>
-<div id="tab-productivity"  class="tab-panel"></div>
-<div id="tab-effectiveness" class="tab-panel"></div>
-<div id="tab-flow"          class="tab-panel"></div>
-<div id="tab-trends"        class="tab-panel"></div>
+<div class="tab-content">
+  <div id="tab-overview"      class="tab-panel active"></div>
+  <div id="tab-pipeline"      class="tab-panel"></div>
+  <div id="tab-productivity"  class="tab-panel"></div>
+  <div id="tab-effectiveness" class="tab-panel"></div>
+  <div id="tab-flow"          class="tab-panel"></div>
+  <div id="tab-trends"        class="tab-panel"></div>
+  <div class="footer" id="footer"></div>
+</div>
 
-<div class="footer" id="footer"></div>
+</div><!-- /.app-body -->
 
 <script>
 // ── AUTH — Microsoft sign-in (single-tenant) ───────────────────────────────
