@@ -216,6 +216,12 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
       <button class="filt-btn" data-period="ALL">ALL</button>
     </div>
     <div class="filt-grp">
+      <span class="filt-lbl">Granularity</span>
+      <button class="filt-btn active" data-gran="day">Day</button>
+      <button class="filt-btn" data-gran="week">Week</button>
+      <button class="filt-btn" data-gran="month">Month</button>
+    </div>
+    <div class="filt-grp">
       <span class="filt-lbl">Outcome</span>
       <select class="filt-sel" id="outcomeSel">
         <option value="">All</option>
@@ -391,7 +397,7 @@ var TASKS = /*INJECT_TASKS*/null;
 var META  = /*INJECT_META*/null;
 
 // ── Filter state ──────────────────────────────────────────────────────────
-var FILTERS = { period: '30D', outcome: '', users: [], humanOnly: true };
+var FILTERS = { period: '30D', outcome: '', users: [], humanOnly: true, gran: 'day' };
 var CHARTS = {};
 var SORT_STATE = {};
 
@@ -425,6 +431,33 @@ function filteredActs() {
 }
 function periodOpps() { return filteredOpps().filter(function(o){ return inPeriod(o.co); }); }
 function median(arr) { if(!arr.length) return 0; var s=arr.slice().sort(function(a,b){return a-b}); var m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; }
+
+// Granularity bucketing — day / week / month
+function bucketKey(d, gran) {
+  if (!d) return null;
+  if (gran === 'week') {
+    var day = d.getDay();              // Sun=0 ... Sat=6
+    var diff = day === 0 ? -6 : 1 - day; // shift back to Monday
+    var m = new Date(d); m.setDate(d.getDate() + diff); m.setHours(0,0,0,0);
+    return m.toISOString().slice(0,10);    // Monday of that week (YYYY-MM-DD)
+  } else if (gran === 'month') {
+    return d.toISOString().slice(0,7);    // YYYY-MM
+  }
+  return d.toISOString().slice(0,10);     // YYYY-MM-DD
+}
+function bucketLabel(key, gran) {
+  if (!key) return '';
+  if (gran === 'month') {
+    var parts = key.split('-');
+    var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return months[parseInt(parts[1],10)-1] + ' ' + parts[0].slice(2);
+  } else if (gran === 'week') {
+    var d = new Date(key + 'T00:00:00');
+    return 'wk ' + (d.getMonth()+1) + '/' + d.getDate();
+  }
+  var d = new Date(key + 'T00:00:00');
+  return (d.getMonth()+1) + '/' + d.getDate();
+}
 function destroyChart(key) { if (CHARTS[key]) { CHARTS[key].destroy(); delete CHARTS[key]; } }
 function isAdmitted(o) { return o.outcome === 'Admitted' || o.outcome === 'AdmittedLegacy'; }
 function isInPipe(o) { var s=(o.outcome||'').toLowerCase(); return s==='active'||s==='scheduled'; }
@@ -456,6 +489,12 @@ document.querySelectorAll('.filt-btn[data-period]').forEach(function(b){
   b.onclick = function() {
     document.querySelectorAll('.filt-btn[data-period]').forEach(function(x){x.classList.remove('active')});
     b.classList.add('active'); FILTERS.period = b.dataset.period; rebuildAll();
+  };
+});
+document.querySelectorAll('.filt-btn[data-gran]').forEach(function(b){
+  b.onclick = function() {
+    document.querySelectorAll('.filt-btn[data-gran]').forEach(function(x){x.classList.remove('active')});
+    b.classList.add('active'); FILTERS.gran = b.dataset.gran; rebuildAll();
   };
 });
 document.querySelectorAll('.filt-btn[data-view]').forEach(function(b){
@@ -1063,28 +1102,32 @@ function renderFlowTimeline(oid) {
 function buildTrends() {
   var actsP = filteredActs();
   var p = FILTERS.period;
+  var g = FILTERS.gran || 'day';
+  var granLbl = g === 'week' ? 'Weekly' : (g === 'month' ? 'Monthly' : 'Daily');
+  var granLblLow = granLbl.toLowerCase();
 
-  // Daily counts by type
+  // Bucket counts by type
   var daily = {}; var typeSet = {};
   actsP.forEach(function(a){
     var d = pd(a.date); if (!d) return;
-    var key = d.toISOString().slice(0,10);
+    var key = bucketKey(d, g);
     if (!daily[key]) daily[key] = {};
     daily[key][a.type] = (daily[key][a.type]||0)+1;
     typeSet[a.type] = true;
   });
   var days = Object.keys(daily).sort();
+  var dayLabelsX = days.map(function(k){ return bucketLabel(k, g); });
   var types = Object.keys(typeSet).sort();
   var typeColors = { Call:'#3b82f6', Note:'#0a3d5c', Email:'#8b5cf6', Sms:'#ec4899', Task:'#3dffc0', Meeting:'#f59e0b', Workflow:'#94a3b8', Wave:'#cbd5e1' };
 
   var html = '<div class="kpis">';
   html += kpi('navy',  'Activities (' + p + ')', actsP.length);
-  html += kpi('blue',  'Daily Avg', days.length ? (actsP.length/days.length).toFixed(1) : '0');
-  html += kpi('teal',  'Distinct Days', days.length);
+  html += kpi('blue',  granLbl + ' Avg', days.length ? (actsP.length/days.length).toFixed(1) : '0');
+  html += kpi('teal',  'Distinct ' + (g==='month'?'Months':g==='week'?'Weeks':'Days'), days.length);
   html += kpi('amber', 'Distinct Types', types.length);
   html += '</div>';
 
-  html += '<div class="card"><div class="card-h"><div><div class="card-title">Daily Activity by Type</div><div class="card-sub">Stacked area · ' + p + '</div></div></div>';
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">' + granLbl + ' Activity by Type</div><div class="card-sub">Stacked area · ' + p + ' · ' + granLblLow + ' buckets</div></div></div>';
   html += '<div class="chart-wrap-tall"><canvas id="ch-daily"></canvas></div></div>';
 
   // Hour x Day-of-week heatmap
@@ -1121,14 +1164,14 @@ function buildTrends() {
   var byUserDaily = {};
   actsP.forEach(function(a){
     if (!a.by) return; var d = pd(a.date); if (!d) return;
-    var key = d.toISOString().slice(0,10);
+    var key = bucketKey(d, g);
     if (!byUserDaily[a.by]) byUserDaily[a.by] = {};
     byUserDaily[a.by][key] = (byUserDaily[a.by][key]||0)+1;
   });
   var topUsers = Object.keys(byUserDaily).map(function(k){ return [k, Object.values(byUserDaily[k]).reduce(function(s,v){return s+v},0)]; })
     .sort(function(a,b){return b[1]-a[1]}).slice(0,6).map(function(x){return x[0]});
 
-  html += '<div class="card"><div class="card-h"><div><div class="card-title">Top 6 Users — Daily Activity</div><div class="card-sub">Time series · ' + p + '</div></div></div>';
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Top 6 Users — ' + granLbl + ' Activity</div><div class="card-sub">Time series · ' + p + ' · ' + granLblLow + ' buckets</div></div></div>';
   html += '<div class="chart-wrap-tall"><canvas id="ch-users"></canvas></div></div></div>';
 
   document.getElementById('tab-trends').innerHTML = html;
@@ -1146,7 +1189,7 @@ function buildTrends() {
   destroyChart('daily');
   CHARTS.daily = new Chart(document.getElementById('ch-daily'), {
     type: 'line',
-    data: { labels: days, datasets: datasets },
+    data: { labels: dayLabelsX, datasets: datasets },
     options: { responsive:true, maintainAspectRatio:false,
       scales: { x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ stacked:true, beginAtZero:true } },
       plugins: { legend:{position:'top',labels:{font:{size:11}}}, tooltip:{mode:'index',intersect:false} },
@@ -1168,7 +1211,7 @@ function buildTrends() {
   destroyChart('users');
   CHARTS.users = new Chart(document.getElementById('ch-users'), {
     type: 'line',
-    data: { labels: days, datasets: userDatasets },
+    data: { labels: dayLabelsX, datasets: userDatasets },
     options: { responsive:true, maintainAspectRatio:false,
       scales: { x:{ ticks:{font:{size:9},maxTicksLimit:10} }, y:{ beginAtZero:true } },
       plugins: { legend:{position:'top',labels:{font:{size:11}}} },
