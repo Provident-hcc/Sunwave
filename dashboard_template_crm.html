@@ -419,7 +419,7 @@ var META  = /*INJECT_META*/null;
 // Shape: { 'User Name': { inbound: { '2026-W18': 23, ... }, outbound: { '2026-W18': 18, ... }, total: 41 }, ... }
 // Wire this up in build_crm.py by fetching from the Strive CTM pipeline and aggregating by agent name.
 // Leave as null when not yet wired — the UI will show a "Connect CTM" prompt and degrade gracefully.
-var CTM = /*INJECT_CTM*/null;
+var CTM = null;  // CTM_HOOK: replace this `null` with a CTM data object once call data is wired into build_crm.py. Shape: { 'User Display Name': { inbound: {bucketKey: count}, outbound: {bucketKey: count}, total: N } }. While null, User Productivity tab shows an amber "CTM not wired" banner with wiring instructions.
 
 // ── Filter state ──────────────────────────────────────────────────────────
 var FILTERS = { period: '30D', outcome: '', users: [], humanOnly: true, gran: 'day', customStart: null, customEnd: null };
