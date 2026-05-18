@@ -199,6 +199,7 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
   <button class="tnav" data-tab="effectiveness">User Effectiveness</button>
   <button class="tnav" data-tab="flow">Opportunity Flow</button>
   <button class="tnav" data-tab="trends">Activity Trends</button>
+  <button class="tnav" data-tab="velocity">Velocity</button>
 </nav>
 
 <!-- App body: filter rail left + tab content right -->
@@ -253,6 +254,7 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 <div id="tab-effectiveness" class="tab-panel"></div>
 <div id="tab-flow"          class="tab-panel"></div>
 <div id="tab-trends"        class="tab-panel"></div>
+<div id="tab-velocity"      class="tab-panel"></div>
 </div><!-- /.tab-content -->
 
 </div><!-- /.app-body -->
@@ -482,6 +484,7 @@ function buildTab(n){
   else if (n === 'effectiveness') buildEffectiveness();
   else if (n === 'flow')          buildFlow();
   else if (n === 'trends')        buildTrends();
+  else if (n === 'velocity')      buildVelocity();
 }
 
 // ── Filter handlers ───────────────────────────────────────────────────────
@@ -1216,6 +1219,180 @@ function buildTrends() {
       scales: { x:{ ticks:{font:{size:9},maxTicksLimit:10} }, y:{ beginAtZero:true } },
       plugins: { legend:{position:'top',labels:{font:{size:11}}} },
       elements: { point:{radius:0} }
+    }
+  });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// WAVE 1 — VELOCITY / DISTRIBUTION  (#13, #14, #15, #16)
+// ──────────────────────────────────────────────────────────────────
+// Shared TTA-style math
+function daysBetween(a, b) {
+  var da = pd(a), db = pd(b);
+  if (!da || !db) return null;
+  var diff = (db - da) / 86400000;
+  return diff >= 0 ? diff : null;
+}
+function tta(o) { return daysBetween(o.co, o.admit); }              // Created → Admitted
+function tts(o) { return daysBetween(o.co, o.scheduled_date); }     // Created → Scheduled
+function tsa(o) { return daysBetween(o.scheduled_date, o.admit); }  // Scheduled → Admitted
+
+// 6-bucket histogram per brief: <1d / 1-3d / 4-7d / 8-14d / 15-30d / 30+d
+var VEL_BUCKETS = [
+  { label: '<1d',    test: function(d){ return d < 1; } },
+  { label: '1-3d',   test: function(d){ return d >= 1 && d <= 3; } },
+  { label: '4-7d',   test: function(d){ return d >= 4 && d <= 7; } },
+  { label: '8-14d',  test: function(d){ return d >= 8 && d <= 14; } },
+  { label: '15-30d', test: function(d){ return d >= 15 && d <= 30; } },
+  { label: '30+d',   test: function(d){ return d > 30; } }
+];
+function bucketize(vals) {
+  return VEL_BUCKETS.map(function(b){ return vals.filter(b.test).length; });
+}
+
+function buildVelocity() {
+  var p = FILTERS.period;
+  var g = FILTERS.gran || 'day';
+  var granLbl = g === 'week' ? 'Weekly' : (g === 'month' ? 'Monthly' : 'Daily');
+  var granLblLow = granLbl.toLowerCase();
+
+  // Outcome + period filtered; bucketing anchored on the relevant date per chart
+  var oppsP = periodOpps();
+
+  // #13 — Median Created → Scheduled, trended (bucket by creation date)
+  var ttsByBucket = {};
+  oppsP.forEach(function(o){
+    var d = pd(o.co); if (!d) return;
+    var v = tts(o); if (v == null) return;
+    var k = bucketKey(d, g);
+    if (!ttsByBucket[k]) ttsByBucket[k] = [];
+    ttsByBucket[k].push(v);
+  });
+  var ttsKeys = Object.keys(ttsByBucket).sort();
+  var ttsLabels = ttsKeys.map(function(k){ return bucketLabel(k, g); });
+  var ttsMeds = ttsKeys.map(function(k){ return Number(median(ttsByBucket[k]).toFixed(1)); });
+
+  // #13b — Per-rep median TTS (≥3 opps floor for fairness)
+  var ttsByRep = {};
+  oppsP.forEach(function(o){
+    var v = tts(o); if (v == null) return;
+    var r = o.rep || '(unassigned)';
+    if (!ttsByRep[r]) ttsByRep[r] = [];
+    ttsByRep[r].push(v);
+  });
+  var repRows = Object.keys(ttsByRep).map(function(r){
+    return { rep: r, med: median(ttsByRep[r]), n: ttsByRep[r].length };
+  }).filter(function(x){ return x.n >= 3; })
+    .sort(function(a,b){ return a.med - b.med; })
+    .slice(0, 12);
+
+  // #14 — Median Scheduled → Admitted, trended (bucket by scheduled date)
+  var tsaByBucket = {};
+  oppsP.forEach(function(o){
+    var d = pd(o.scheduled_date); if (!d) return;
+    var v = tsa(o); if (v == null) return;
+    var k = bucketKey(d, g);
+    if (!tsaByBucket[k]) tsaByBucket[k] = [];
+    tsaByBucket[k].push(v);
+  });
+  var tsaKeys = Object.keys(tsaByBucket).sort();
+  var tsaLabels = tsaKeys.map(function(k){ return bucketLabel(k, g); });
+  var tsaMeds = tsaKeys.map(function(k){ return Number(median(tsaByBucket[k]).toFixed(1)); });
+
+  // #15, #16 — Distribution values (period-anchored on creation)
+  var ttaVals = oppsP.map(tta).filter(function(v){ return v != null; });
+  var ttsVals = oppsP.map(tts).filter(function(v){ return v != null; });
+  var tsaVals = oppsP.map(tsa).filter(function(v){ return v != null; });
+  var ttaBuckets = bucketize(ttaVals);
+  var ttsBucketsHist = bucketize(ttsVals);
+
+  // KPI strip
+  var medTts = ttsVals.length ? median(ttsVals).toFixed(1) : '—';
+  var medTsa = tsaVals.length ? median(tsaVals).toFixed(1) : '—';
+  var medTta = ttaVals.length ? median(ttaVals).toFixed(1) : '—';
+
+  var html = '<div class="kpis">';
+  html += kpi('navy',  'Median Created→Sched', medTts + ' d', ttsVals.length + ' opps');
+  html += kpi('teal',  'Median Sched→Admit',   medTsa + ' d', tsaVals.length + ' opps');
+  html += kpi('blue',  'Median Created→Admit', medTta + ' d', ttaVals.length + ' admits');
+  html += kpi('amber', 'Period · Granularity', p + ' · ' + granLbl);
+  html += '</div>';
+
+  // Trended pair
+  html += '<div class="g2">';
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Median Created → Scheduled</div><div class="card-sub">' + granLbl + ' · ' + p + ' · days from creation to scheduled</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vel-tts"></canvas></div></div>';
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Median Scheduled → Admitted</div><div class="card-sub">' + granLbl + ' · ' + p + ' · close lag in days</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vel-tsa"></canvas></div></div>';
+  html += '</div>';
+
+  // Per-rep
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Median Created → Scheduled by Rep</div><div class="card-sub">Fastest first · ' + p + ' · reps with ≥3 opps · top 12</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vel-tts-rep"></canvas></div></div>';
+
+  // Histograms
+  html += '<div class="g2">';
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Time-to-Admit Distribution</div><div class="card-sub">' + p + ' · ' + ttaVals.length + ' opps · days from created to admit</div></div></div><div class="chart-wrap"><canvas id="ch-vel-tta-hist"></canvas></div></div>';
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Time-to-Scheduled Distribution</div><div class="card-sub">' + p + ' · ' + ttsVals.length + ' opps · days from created to scheduled</div></div></div><div class="chart-wrap"><canvas id="ch-vel-tts-hist"></canvas></div></div>';
+  html += '</div>';
+
+  document.getElementById('tab-velocity').innerHTML = html;
+
+  // ── Chart instances ──
+  var dayTooltip = { callbacks: { label: function(ctx){ return ctx.parsed.y + ' days'; } } };
+  var dayTooltipX = { callbacks: { label: function(ctx){ return ctx.parsed.x + ' days'; } } };
+
+  destroyChart('velTts');
+  CHARTS.velTts = new Chart(document.getElementById('ch-vel-tts'), {
+    type: 'line',
+    data: { labels: ttsLabels, datasets: [{ label:'Median days', data: ttsMeds, borderColor:'#0a3d5c', backgroundColor:'rgba(10,61,92,0.12)', tension:0.3, fill:true }] },
+    options: { responsive:true, maintainAspectRatio:false,
+      scales: { x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'days'} } },
+      plugins: { legend:{display:false}, tooltip:dayTooltip },
+      elements: { point:{radius:2} }
+    }
+  });
+
+  destroyChart('velTsa');
+  CHARTS.velTsa = new Chart(document.getElementById('ch-vel-tsa'), {
+    type: 'line',
+    data: { labels: tsaLabels, datasets: [{ label:'Median days', data: tsaMeds, borderColor:'#3dffc0', backgroundColor:'rgba(61,255,192,0.18)', tension:0.3, fill:true }] },
+    options: { responsive:true, maintainAspectRatio:false,
+      scales: { x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'days'} } },
+      plugins: { legend:{display:false}, tooltip:dayTooltip },
+      elements: { point:{radius:2} }
+    }
+  });
+
+  destroyChart('velTtsRep');
+  CHARTS.velTtsRep = new Chart(document.getElementById('ch-vel-tts-rep'), {
+    type: 'bar',
+    data: {
+      labels: repRows.map(function(r){ return r.rep + ' (n=' + r.n + ')'; }),
+      datasets: [{ label:'Median days', data: repRows.map(function(r){ return Number(r.med.toFixed(1)); }), backgroundColor:'#4BBDE8', borderRadius:4 }]
+    },
+    options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      scales: { x:{ beginAtZero:true, title:{display:true,text:'days'} }, y:{ ticks:{font:{size:11}} } },
+      plugins: { legend:{display:false}, tooltip:dayTooltipX }
+    }
+  });
+
+  var bucketLabels = VEL_BUCKETS.map(function(b){ return b.label; });
+
+  destroyChart('velTtaHist');
+  CHARTS.velTtaHist = new Chart(document.getElementById('ch-vel-tta-hist'), {
+    type: 'bar',
+    data: { labels: bucketLabels, datasets: [{ label:'Opps', data: ttaBuckets, backgroundColor:'#0a3d5c', borderRadius:4 }] },
+    options: { responsive:true, maintainAspectRatio:false,
+      scales: { x:{ ticks:{font:{size:11}} }, y:{ beginAtZero:true, title:{display:true,text:'count'} } },
+      plugins: { legend:{display:false} }
+    }
+  });
+
+  destroyChart('velTtsHist');
+  CHARTS.velTtsHist = new Chart(document.getElementById('ch-vel-tts-hist'), {
+    type: 'bar',
+    data: { labels: bucketLabels, datasets: [{ label:'Opps', data: ttsBucketsHist, backgroundColor:'#3dffc0', borderRadius:4 }] },
+    options: { responsive:true, maintainAspectRatio:false,
+      scales: { x:{ ticks:{font:{size:11}} }, y:{ beginAtZero:true, title:{display:true,text:'count'} } },
+      plugins: { legend:{display:false} }
     }
   });
 }
