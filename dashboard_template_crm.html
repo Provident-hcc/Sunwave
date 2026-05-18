@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -159,7 +158,6 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 <body class="locked">
 
 <!-- Sign-in overlay (shown until authenticated to org tenant) -->
-
 <div id="signin-overlay">
   <div class="signin-card" id="signinCard">
     <span class="pill">SUNWAVE CRM</span>
@@ -175,7 +173,6 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 </div>
 
 <!-- Topbar -->
-
 <div class="topbar">
   <div class="tb-left">
     <span class="tb-pill">SUNWAVE CRM</span>
@@ -195,7 +192,6 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 </div>
 
 <!-- Tab nav -->
-
 <nav class="tab-nav" id="tabs">
   <button class="tnav active" data-tab="overview">Overview</button>
   <button class="tnav" data-tab="pipeline">Pipeline &amp; Funnel</button>
@@ -208,11 +204,9 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 </nav>
 
 <!-- App body: filter rail left + tab content right -->
-
 <div class="app-body">
 
 <!-- Filters (left sidebar on desktop, top bar on mobile <768px) -->
-
 <div class="filters">
   <div class="filters-inner">
     <div class="filt-grp">
@@ -254,7 +248,6 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 </div>
 
 <!-- Tab panels -->
-
 <div class="tab-content">
 <div id="tab-overview"      class="tab-panel active"></div>
 <div id="tab-pipeline"      class="tab-panel"></div>
@@ -413,7 +406,12 @@ var CHARTS = {};
 var SORT_STATE = {};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-function pd(s) { if (!s) return null; var d = new Date(s); return isNaN(d) ? null : d; }
+function pd(s) {
+  if (!s) return null;
+  if (typeof s === 'string' && s.indexOf('1970-01-01') === 0) return null;  // upstream sentinel for missing
+  var d = new Date(s);
+  return isNaN(d) ? null : d;
+}
 function fmt(d) { if (!d) return ''; var m=(d.getMonth()+1)+''; var dd=d.getDate()+''; return (m.length<2?'0':'')+m+'/'+(dd.length<2?'0':'')+dd+'/'+d.getFullYear(); }
 function fmtDT(d) { if (!d) return ''; var t = d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true}); return fmt(d)+' '+t; }
 function esc(s) { if (s == null) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -517,6 +515,53 @@ function lastHumanTouchBefore(opp, cutoff) {
   });
   return last;
 }
+
+// Normalize stage values that arrive with colon suffix sub-states
+// e.g. 'VOB: On Queue' → 'VOB' · 'Pre-Screen: Refer Out' → 'Pre-Screen'
+// Alias 'Entered' → 'Created' to match the canonical STAGE_ORDER.
+function stagePrefix(stage) {
+  if (!stage) return '';
+  var idx = stage.indexOf(':');
+  var s = (idx > 0 ? stage.substring(0, idx) : stage).trim();
+  if (s === 'Entered') return 'Created';
+  return s;
+}
+
+// Derived scheduled date — Sunwave doesn't export scheduled_date directly.
+// We mine ACTS for the earliest workflow act where wf === 'Scheduled' on this opp.
+var _schedDateCache = {};
+function getScheduledDate(opp) {
+  if (opp.scheduled_date) return opp.scheduled_date;
+  if (_schedDateCache[opp.id] !== undefined) return _schedDateCache[opp.id];
+  var arr = actsByOpp()[opp.id] || [];
+  var earliest = null;
+  arr.forEach(function(a){
+    if (a.type !== 'Workflow') return;
+    if (a.wf !== 'Scheduled') return;
+    var d = pd(a.date); if (!d) return;
+    if (!earliest || d < earliest) earliest = d;
+  });
+  _schedDateCache[opp.id] = earliest ? earliest.toISOString() : null;
+  return _schedDateCache[opp.id];
+}
+// Derived admit date — upstream pipeline emits '1970-01-01...' sentinel for missing.
+// Recover by mining ACTS for the earliest workflow act with wf === 'Admitted'.
+var _admitDateCache = {};
+function getAdmitDate(opp) {
+  if (opp.admit && pd(opp.admit)) return opp.admit;  // pd() already rejected the 1970 sentinel
+  if (_admitDateCache[opp.id] !== undefined) return _admitDateCache[opp.id];
+  var arr = actsByOpp()[opp.id] || [];
+  var earliest = null;
+  arr.forEach(function(a){
+    if (a.type !== 'Workflow') return;
+    var wf = (a.wf || '').toLowerCase();
+    if (wf !== 'admitted' && wf !== 'admittedlegacy') return;
+    var d = pd(a.date); if (!d) return;
+    if (!earliest || d < earliest) earliest = d;
+  });
+  _admitDateCache[opp.id] = earliest ? earliest.toISOString() : null;
+  return _admitDateCache[opp.id];
+}
 // Generic top-N + Other series builder for a stacked-area trended chart
 function buildTopNTrended(items, dateGetter, categoryGetter, gran, topN) {
   var byBucketByCat = {}, totals = {};
@@ -551,8 +596,8 @@ function buildTopNTrended(items, dateGetter, categoryGetter, gran, topN) {
 var STAGE_ORDER = ['Created', 'VOB', 'Pre-Screen', 'Priority', 'Scheduled', 'Admitted'];
 function highestStageIdx(o) {
   if (isAdmitted(o)) return STAGE_ORDER.indexOf('Admitted');
-  if (o.outcome === 'Scheduled' || o.scheduled_date) return STAGE_ORDER.indexOf('Scheduled');
-  var i = STAGE_ORDER.indexOf(o.stage);
+  if (o.outcome === 'Scheduled' || getScheduledDate(o)) return STAGE_ORDER.indexOf('Scheduled');
+  var i = STAGE_ORDER.indexOf(stagePrefix(o.stage));
   return i >= 0 ? i : 0;  // unknown stage = Created floor
 }
 function reachedStage(o, stageName) {
@@ -561,8 +606,10 @@ function reachedStage(o, stageName) {
 // Show-up: of opps with a scheduled_date in bucket, fraction that were Admitted
 // within `windowDays` of being scheduled. Default 14 days.
 function showedUp(o, windowDays) {
-  if (!o.scheduled_date || !isAdmitted(o) || !o.admit) return false;
-  var v = daysBetween(o.scheduled_date, o.admit);
+  var sched = getScheduledDate(o);
+  var admit = getAdmitDate(o);
+  if (!sched || !isAdmitted(o) || !admit) return false;
+  var v = daysBetween(sched, admit);
   return v != null && v <= (windowDays == null ? 14 : windowDays);
 }
 
@@ -680,7 +727,7 @@ function buildOverview() {
   lbArr.sort(function(a,b){ return b.total - a.total; });
 
   // Multi-touch admit credit
-  var admittedOids = new Set(allFilteredOpps.filter(isAdmitted).filter(function(o){ return inPeriod(o.admit) || inPeriod(o.co); }).map(function(o){ return o.id; }));
+  var admittedOids = new Set(allFilteredOpps.filter(isAdmitted).filter(function(o){ return inPeriod(getAdmitDate(o)) || inPeriod(o.co); }).map(function(o){ return o.id; }));
   var admitCredit = {};
   ACTS.forEach(function(a){
     if (FILTERS.humanOnly && !isHuman(a)) return;
@@ -712,7 +759,7 @@ function buildOverview() {
     var oacts = ACTS.filter(function(a){ return a.oid === o.id && isHuman(a); });
     oacts.sort(function(a,b){ return (pd(b.date)||new Date(0)) - (pd(a.date)||new Date(0)); });
     var closer = oacts.length ? oacts[0].by : '—';
-    html += '<tr><td>'+esc(o.name)+'</td><td><span class="badge b-green">'+(o.admit?fmt(pd(o.admit)):'—')+'</span></td><td>'+esc(closer)+'</td></tr>';
+    html += '<tr><td>'+esc(o.name)+'</td><td><span class="badge b-green">'+(getAdmitDate(o)?fmt(pd(getAdmitDate(o))):'—')+'</span></td><td>'+esc(closer)+'</td></tr>';
   });
   html += '</tbody></table></div></div></div>';
 
@@ -815,7 +862,7 @@ function buildPipeline() {
 
   // Time to admit distribution (admit_date - created_on)
   var ttaDays = oppsP.filter(isAdmitted).map(function(o){
-    var c = pd(o.co), a = pd(o.admit);
+    var c = pd(o.co), a = pd(getAdmitDate(o));
     if (!c || !a) return null;
     return Math.max(0, Math.floor((a-c)/86400000));
   }).filter(function(d){ return d !== null; });
@@ -922,8 +969,9 @@ function buildPipeline() {
   var SHOWUP_WINDOW = 14;
   var schedByBucket = {}, showedByBucket = {};
   oppsP.forEach(function(o){
-    if (!o.scheduled_date) return;
-    var d = pd(o.scheduled_date); if (!d) return;
+    var sched = getScheduledDate(o);
+    if (!sched) return;
+    var d = pd(sched); if (!d) return;
     var key = bucketKey(d, g);
     schedByBucket[key] = (schedByBucket[key]||0) + 1;
     if (showedUp(o, SHOWUP_WINDOW)) showedByBucket[key] = (showedByBucket[key]||0) + 1;
@@ -1104,7 +1152,7 @@ function buildPipeline() {
       if (isDeniedOpp(o)) { volDenied[kc] = (volDenied[kc]||0) + 1; }
     }
     if (isWonOpp(o)) {
-      var da = pd(o.admit);
+      var da = pd(getAdmitDate(o));
       if (da) { var ka = bucketKey(da, g); volAdmit[ka] = (volAdmit[ka]||0) + 1; allKeysSet[ka] = true; }
     }
   });
@@ -1278,37 +1326,126 @@ function buildProductivity() {
   });
   html += '</tbody></table></div></div>';
 
-  // Activity mix chart (top 12)
-  html += '<div class="card"><div class="card-h"><div><div class="card-title">Activity Mix by User (Top 12)</div><div class="card-sub">Stacked by activity type</div></div></div>';
-  html += '<div class="chart-wrap-tall"><canvas id="ch-mix"></canvas></div></div>';
+  // ── Activity Trending by Employee (replaces "Activity Mix by User") ─────
+  var g = FILTERS.gran || 'day';
+  var granLbl = g === 'week' ? 'Weekly' : (g === 'month' ? 'Monthly' : 'Daily');
+  var top12 = rows.slice(0, 12);
+  var top12Names = top12.map(function(r){ return r.name; });
+
+  // Per-user totals per time bucket (top-level line chart)
+  var userBuckets = {};
+  top12Names.forEach(function(n){ userBuckets[n] = {}; });
+  var allBucketKeys = {};
+  actsP.forEach(function(a){
+    if (!a.by || top12Names.indexOf(a.by) < 0) return;
+    var d = pd(a.date); if (!d) return;
+    var k = bucketKey(d, g);
+    allBucketKeys[k] = true;
+    userBuckets[a.by][k] = (userBuckets[a.by][k]||0) + 1;
+  });
+  var bKeys = Object.keys(allBucketKeys).sort();
+  var bLabels = bKeys.map(function(k){ return bucketLabel(k, g); });
+
+  // Per-user-per-type buckets (for accordion expansion)
+  var userTypeBuckets = {};
+  top12Names.forEach(function(n){ userTypeBuckets[n] = {}; });
+  actsP.forEach(function(a){
+    if (!a.by || top12Names.indexOf(a.by) < 0) return;
+    var d = pd(a.date); if (!d) return;
+    var k = bucketKey(d, g);
+    var t = a.type || 'Other';
+    if (!userTypeBuckets[a.by][t]) userTypeBuckets[a.by][t] = {};
+    userTypeBuckets[a.by][t][k] = (userTypeBuckets[a.by][t][k]||0) + 1;
+  });
+
+  html += '<div class="card">';
+  html += '<div class="card-h"><div><div class="card-title">Activity Trending by Employee</div><div class="card-sub">Top 12 · ' + granLbl + ' · ' + p + ' · tap a row below to expand activity-type breakdown</div></div></div>';
+  html += '<div class="chart-wrap-tall"><canvas id="ch-mix-trend"></canvas></div>';
+  html += '<div class="acc-list" style="margin-top:14px;border-top:1px solid #eee">';
+  top12.forEach(function(r, idx){
+    html += '<div class="acc-item" data-idx="'+idx+'" style="border-bottom:1px solid #eee">';
+    html += '<div class="acc-head" style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px;cursor:pointer;user-select:none">';
+    html += '<span><span class="acc-caret" style="display:inline-block;width:14px;color:var(--muted);transition:transform 0.2s">▶</span>&nbsp;<strong>'+esc(r.name)+'</strong> <span style="color:var(--muted);font-size:12px">· '+r.total+' acts · '+r.opps+' opps</span></span>';
+    html += '<span style="color:var(--muted);font-size:11px">expand</span>';
+    html += '</div>';
+    html += '<div class="acc-body" style="display:none;padding:8px 14px 16px;background:#fafbfc"><div class="chart-wrap"><canvas id="ch-mix-user-'+idx+'"></canvas></div></div>';
+    html += '</div>';
+  });
+  html += '</div>';
+  html += '</div>';
 
   document.getElementById('tab-productivity').innerHTML = html;
 
-  // Sort handlers
-  var tbl = document.getElementById('prod-tbl');
-  tbl.querySelectorAll('th').forEach(function(th, i){
+  // Sort handlers (re-bind after setting innerHTML)
+  var tbl2 = document.getElementById('prod-tbl');
+  tbl2.querySelectorAll('th').forEach(function(th, i){
     th.onclick = function() { sortProdTable(i); };
   });
 
-  // Stacked bar chart
-  var top12 = rows.slice(0, 12);
-  destroyChart('mix');
-  CHARTS.mix = new Chart(document.getElementById('ch-mix'), {
-    type:'bar',
-    data: {
-      labels: top12.map(function(r){return r.name}),
-      datasets: [
-        { label:'Calls',     data: top12.map(function(r){return r.call}),    backgroundColor:'#3b82f6' },
-        { label:'Notes',     data: top12.map(function(r){return r.note}),    backgroundColor:'#0a3d5c' },
-        { label:'Email/SMS', data: top12.map(function(r){return r.email}),   backgroundColor:'#8b5cf6' },
-        { label:'Tasks',     data: top12.map(function(r){return r.task}),    backgroundColor:'#3dffc0' },
-        { label:'Meetings',  data: top12.map(function(r){return r.meeting}), backgroundColor:'#f59e0b' },
-      ]
+  // Top-level trending chart — one line per user
+  var mixPalette = ['#0a3d5c','#3b82f6','#3dffc0','#f59e0b','#8b5cf6','#ef4444','#10b981','#4BBDE8','#94a3b8','#e11d48','#0891b2','#a16207'];
+  destroyChart('mixTrend');
+  CHARTS.mixTrend = new Chart(document.getElementById('ch-mix-trend'), {
+    type:'line',
+    data:{
+      labels: bLabels,
+      datasets: top12Names.map(function(n, i){
+        return {
+          label: n,
+          data: bKeys.map(function(k){ return userBuckets[n][k] || 0; }),
+          borderColor: mixPalette[i % mixPalette.length],
+          backgroundColor: mixPalette[i % mixPalette.length] + '20',
+          tension:0.3, fill:false, borderWidth:2
+        };
+      })
     },
-    options:{ responsive:true, maintainAspectRatio:false, indexAxis:'y',
-      scales:{ x:{ stacked:true }, y:{ stacked:true, ticks:{font:{size:11}} } },
-      plugins:{ legend:{position:'top',labels:{font:{size:11}}} }
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'acts'} } },
+      plugins:{ legend:{position:'top',labels:{font:{size:10},boxWidth:10}}, tooltip:{mode:'index',intersect:false} },
+      elements:{ point:{radius:0} }
     }
+  });
+
+  // Accordion behavior + lazy per-user breakdown chart
+  var typeColors = { 'Call':'#3b82f6', 'Note':'#0a3d5c', 'Email':'#8b5cf6', 'Sms':'#8b5cf6', 'Task':'#3dffc0', 'Meeting':'#f59e0b', 'Workflow':'#94a3b8' };
+  document.querySelectorAll('.acc-item').forEach(function(item){
+    var head = item.querySelector('.acc-head');
+    var body = item.querySelector('.acc-body');
+    var caret = item.querySelector('.acc-caret');
+    var idx = parseInt(item.dataset.idx, 10);
+    head.onclick = function(){
+      var open = body.style.display !== 'none';
+      if (open) {
+        body.style.display = 'none';
+        caret.style.transform = '';
+      } else {
+        body.style.display = 'block';
+        caret.style.transform = 'rotate(90deg)';
+        var chartKey = 'mixUser' + idx;
+        if (!CHARTS[chartKey]) {
+          var name = top12Names[idx];
+          var types = ['Call','Note','Email','Sms','Task','Meeting','Workflow'];
+          var datasets = types.map(function(t){
+            return {
+              label: t === 'Sms' ? 'SMS' : t,
+              data: bKeys.map(function(k){
+                return ((userTypeBuckets[name]||{})[t]||{})[k] || 0;
+              }),
+              backgroundColor: typeColors[t] || '#999',
+              stack: 's'
+            };
+          }).filter(function(d){ return d.data.some(function(v){return v > 0;}); });
+          CHARTS[chartKey] = new Chart(document.getElementById('ch-mix-user-'+idx), {
+            type:'bar',
+            data:{ labels: bLabels, datasets: datasets },
+            options:{ responsive:true, maintainAspectRatio:false,
+              scales:{ x:{ stacked:true, ticks:{font:{size:9},maxTicksLimit:12} }, y:{ stacked:true, beginAtZero:true } },
+              plugins:{ legend:{position:'top',labels:{font:{size:11},boxWidth:12}}, tooltip:{mode:'index',intersect:false} }
+            }
+          });
+        }
+      }
+    };
   });
 }
 
@@ -1370,7 +1507,7 @@ function buildEffectiveness() {
   });
 
   // Multi-touch admit credit (period)
-  var admittedOids = new Set(filteredOpps().filter(isAdmitted).filter(function(o){ return inPeriod(o.admit) || inPeriod(o.co); }).map(function(o){return o.id}));
+  var admittedOids = new Set(filteredOpps().filter(isAdmitted).filter(function(o){ return inPeriod(getAdmitDate(o)) || inPeriod(o.co); }).map(function(o){return o.id}));
   var adminCred = {};
   ACTS.forEach(function(a){
     if (FILTERS.humanOnly && !isHuman(a)) return;
@@ -1689,8 +1826,8 @@ function buildTrends() {
       dowCreated[dc.getDay()]++;
       if (isAdmitted(o)) dowAdmittedFromCreation[dc.getDay()]++;
     }
-    if (isAdmitted(o) && o.admit) {
-      var da = pd(o.admit); if (da) dowAdmits[da.getDay()]++;
+    if (isAdmitted(o) && getAdmitDate(o)) {
+      var da = pd(getAdmitDate(o)); if (da) dowAdmits[da.getDay()]++;
     }
   });
   var dowLabels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -1772,9 +1909,9 @@ function daysBetween(a, b) {
   var diff = (db - da) / 86400000;
   return diff >= 0 ? diff : null;
 }
-function tta(o) { return daysBetween(o.co, o.admit); }              // Created → Admitted
-function tts(o) { return daysBetween(o.co, o.scheduled_date); }     // Created → Scheduled
-function tsa(o) { return daysBetween(o.scheduled_date, o.admit); }  // Scheduled → Admitted
+function tta(o) { return daysBetween(o.co, getAdmitDate(o)); }              // Created → Admitted
+function tts(o) { return daysBetween(o.co, getScheduledDate(o)); }   // Created → Scheduled
+function tsa(o) { return daysBetween(getScheduledDate(o), getAdmitDate(o)); } // Scheduled → Admitted
 
 // 6-bucket histogram per brief: <1d / 1-3d / 4-7d / 8-14d / 15-30d / 30+d
 var VEL_BUCKETS = [
@@ -1828,7 +1965,8 @@ function buildVelocity() {
   // #14 — Median Scheduled → Admitted, trended (bucket by scheduled date)
   var tsaByBucket = {};
   oppsP.forEach(function(o){
-    var d = pd(o.scheduled_date); if (!d) return;
+    var sched = getScheduledDate(o); if (!sched) return;
+    var d = pd(sched); if (!d) return;
     var v = tsa(o); if (v == null) return;
     var k = bucketKey(d, g);
     if (!tsaByBucket[k]) tsaByBucket[k] = [];
@@ -1841,7 +1979,7 @@ function buildVelocity() {
   // #5 — Median Created → Admitted (TTA), trended (bucket by admit date)
   var ttaByBucket = {};
   oppsP.forEach(function(o){
-    var d = pd(o.admit); if (!d) return;
+    var d = pd(getAdmitDate(o)); if (!d) return;
     var v = tta(o); if (v == null) return;
     var k = bucketKey(d, g);
     if (!ttaByBucket[k]) ttaByBucket[k] = [];
@@ -1873,8 +2011,8 @@ function buildVelocity() {
     var m = c.toISOString().slice(0,7);
     if (!cohorts[m]) cohorts[m] = { size:0, d3:0, d7:0, d14:0, d30:0 };
     cohorts[m].size++;
-    if (isAdmitted(o) && o.admit) {
-      var days = daysBetween(o.co, o.admit);
+    if (isAdmitted(o) && getAdmitDate(o)) {
+      var days = daysBetween(o.co, getAdmitDate(o));
       if (days == null) return;
       if (days <= 3)  cohorts[m].d3++;
       if (days <= 7)  cohorts[m].d7++;
@@ -2055,11 +2193,11 @@ function buildComposition() {
   // #11 — Top 5 Referral Sources stacked area (all opps in period, by creation)
   var refTrend  = buildTopNTrended(oppsP,  function(o){ return o.co; }, function(o){ return o.ref; }, g, 5);
   // #22a — Insurance mix on admits (by admit date)
-  var insTrend  = buildTopNTrended(admits, function(o){ return o.admit; }, function(o){ return o.ins; }, g, 5);
+  var insTrend  = buildTopNTrended(admits, function(o){ return getAdmitDate(o); }, function(o){ return o.ins; }, g, 5);
   // #22b — LOC mix on admits
-  var locTrend  = buildTopNTrended(admits, function(o){ return o.admit; }, function(o){ return o.loc; }, g, 5);
+  var locTrend  = buildTopNTrended(admits, function(o){ return getAdmitDate(o); }, function(o){ return o.loc; }, g, 5);
   // #22c — Referral type mix on admits
-  var refTypeAdmit = buildTopNTrended(admits, function(o){ return o.admit; }, function(o){ return o.ref; }, g, 5);
+  var refTypeAdmit = buildTopNTrended(admits, function(o){ return getAdmitDate(o); }, function(o){ return o.ref; }, g, 5);
 
   // KPI strip
   var html = '<div class="kpis">';
@@ -2118,6 +2256,5 @@ function bootstrapDashboard() {
   buildOverview();
 }
 </script>
-
 </body>
 </html>
