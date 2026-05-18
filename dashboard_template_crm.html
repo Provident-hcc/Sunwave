@@ -465,6 +465,16 @@ function isAdmitted(o) { return o.outcome === 'Admitted' || o.outcome === 'Admit
 function isInPipe(o) { var s=(o.outcome||'').toLowerCase(); return s==='active'||s==='scheduled'; }
 function isLost(o) { return o.outcome === 'Lost' || o.outcome === 'Abandoned'; }
 
+// ── Outcome category classifiers (Vadim's report taxonomy) ───────────────
+function isOpenOpp(o)   { return o.outcome === 'Active' || o.outcome === 'Scheduled'; }
+function isLostOpp(o)   { return o.outcome === 'Lost'; }
+// "Denied" — provisional mapping: real 'Denied' outcome if present, else 'Abandoned'
+function isDeniedOpp(o) { return o.outcome === 'Denied' || o.outcome === 'Abandoned'; }
+// "Won" — admitted/discharged
+function isWonOpp(o)    { return o.outcome === 'Admitted' || o.outcome === 'AdmittedLegacy' || o.outcome === 'Discharged'; }
+// Reason field for a Denied opp (real Denied uses denied_r if present, else falls back to aband_r)
+function deniedReason(o) { return o.denied_r || o.aband_r || null; }
+
 // ── Wave 2 — funnel progression helpers ───────────────────────────────────
 // Canonical stage order. Highest stage reached is implied by outcome/dates,
 // not just the current `stage` field — an Admitted opp passed through all priors.
@@ -904,6 +914,112 @@ function buildPipeline() {
       elements:{ point:{radius:2} }
     }
   });
+
+  // ── Outcome composition trended (Vadim's report ask) ────────────────────
+  // Bucket every opp in period by CREATION date; classify by outcome category.
+  var mixByBucket = {};
+  oppsP.forEach(function(o){
+    var d = pd(o.co); if (!d) return;
+    var key = bucketKey(d, g);
+    if (!mixByBucket[key]) mixByBucket[key] = { open:0, lost:0, denied:0, won:0, other:0, total:0 };
+    var b = mixByBucket[key]; b.total++;
+    if (isWonOpp(o))         b.won++;
+    else if (isOpenOpp(o))   b.open++;
+    else if (isDeniedOpp(o)) b.denied++;
+    else if (isLostOpp(o))   b.lost++;
+    else                     b.other++;
+  });
+  var mixKeys = Object.keys(mixByBucket).sort();
+  var mixLabels = mixKeys.map(function(k){ return bucketLabel(k, g); });
+  function pctSeries(field){
+    return mixKeys.map(function(k){
+      var b = mixByBucket[k];
+      return b.total > 0 ? Number((b[field]/b.total*100).toFixed(1)) : 0;
+    });
+  }
+
+  // Lost reasons trended (top 5 + Other)
+  function buildReasonTrend(filterFn, reasonFn) {
+    var byBucketByReason = {};   // bucket -> { reason -> count }
+    var reasonTotals = {};
+    oppsP.forEach(function(o){
+      if (!filterFn(o)) return;
+      var d = pd(o.co); if (!d) return;
+      var r = reasonFn(o) || '(no reason)';
+      var key = bucketKey(d, g);
+      if (!byBucketByReason[key]) byBucketByReason[key] = {};
+      byBucketByReason[key][r] = (byBucketByReason[key][r]||0) + 1;
+      reasonTotals[r] = (reasonTotals[r]||0) + 1;
+    });
+    var keys = Object.keys(byBucketByReason).sort();
+    var top = Object.keys(reasonTotals).sort(function(a,b){return reasonTotals[b]-reasonTotals[a];}).slice(0,5);
+    var hasOther = Object.keys(reasonTotals).length > top.length;
+    var series = top.map(function(r){
+      return { label:r, data: keys.map(function(k){ return (byBucketByReason[k]||{})[r] || 0; }) };
+    });
+    if (hasOther) {
+      series.push({ label:'Other', data: keys.map(function(k){
+        var bucket = byBucketByReason[k] || {}; var sum = 0;
+        Object.keys(bucket).forEach(function(r){ if (top.indexOf(r) < 0) sum += bucket[r]; });
+        return sum;
+      })});
+    }
+    return { labels: keys.map(function(k){ return bucketLabel(k, g); }), series: series, total: Object.keys(reasonTotals).reduce(function(s,r){return s+reasonTotals[r];},0) };
+  }
+  var lostTrend = buildReasonTrend(isLostOpp,   function(o){ return o.lost_r; });
+  var denTrend  = buildReasonTrend(isDeniedOpp, deniedReason);
+
+  // ── Wave 2.5 HTML ────────────────────────────────────────────────────────
+  var mixHtml = '<div class="card"><div class="card-h"><div><div class="card-title">Outcome Mix Over Time</div><div class="card-sub">' + granLbl + ' · % of opps created in each bucket · Open / Lost / Denied / Won · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-outcome-mix-trend"></canvas></div></div>';
+  mixHtml += '<div class="g2">';
+  mixHtml += '<div class="card"><div class="card-h"><div><div class="card-title">Lost Reasons Over Time</div><div class="card-sub">' + granLbl + ' · top 5 stacked · ' + lostTrend.total + ' lost opps · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-lost-reasons-trend"></canvas></div></div>';
+  mixHtml += '<div class="card"><div class="card-h"><div><div class="card-title">Denied Reasons Over Time</div><div class="card-sub">' + granLbl + ' · top 5 stacked · ' + denTrend.total + ' denied opps · uses Abandoned outcome until a real Denied field exists · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-denied-reasons-trend"></canvas></div></div>';
+  mixHtml += '</div>';
+  document.getElementById('tab-pipeline').innerHTML += mixHtml;
+
+  // Outcome mix chart — stacked area, 100% by bucket
+  var mixColors = { open:'#4BBDE8', lost:'#f59e0b', denied:'#ef4444', won:'#10b981' };
+  destroyChart('outcomeMixTrend');
+  CHARTS.outcomeMixTrend = new Chart(document.getElementById('ch-outcome-mix-trend'), {
+    type:'line',
+    data:{
+      labels: mixLabels,
+      datasets: [
+        { label:'Open (Active+Scheduled)', data: pctSeries('open'),   borderColor:mixColors.open,   backgroundColor:'rgba(75,189,232,0.5)',  fill:true, tension:0.3 },
+        { label:'Lost',                    data: pctSeries('lost'),   borderColor:mixColors.lost,   backgroundColor:'rgba(245,158,11,0.55)', fill:true, tension:0.3 },
+        { label:'Denied',                  data: pctSeries('denied'), borderColor:mixColors.denied, backgroundColor:'rgba(239,68,68,0.55)',  fill:true, tension:0.3 },
+        { label:'Won (Admitted/Disch.)',   data: pctSeries('won'),    borderColor:mixColors.won,    backgroundColor:'rgba(16,185,129,0.55)', fill:true, tension:0.3 }
+      ]
+    },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ stacked:true, beginAtZero:true, max:100, title:{display:true,text:'%'} } },
+      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{ mode:'index', intersect:false, callbacks:{ label:function(ctx){ return ctx.dataset.label + ': ' + ctx.parsed.y + '%'; } } } },
+      elements:{ point:{radius:0} }
+    }
+  });
+
+  // Lost reasons trended
+  var reasonPalette = ['#0a3d5c','#3dffc0','#4BBDE8','#f59e0b','#8b5cf6','#94a3b8'];
+  function reasonChartCfg(t, ch) {
+    return {
+      type:'line',
+      data:{ labels: t.labels, datasets: t.series.map(function(s, i){
+        return { label:s.label, data:s.data,
+          borderColor: reasonPalette[i % reasonPalette.length],
+          backgroundColor: reasonPalette[i % reasonPalette.length] + 'AA',
+          fill:true, tension:0.3 };
+      }) },
+      options:{ responsive:true, maintainAspectRatio:false,
+        scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ stacked:true, beginAtZero:true, title:{display:true,text:'count'} } },
+        plugins:{ legend:{position:'top',labels:{font:{size:11},boxWidth:12}}, tooltip:{mode:'index',intersect:false} },
+        elements:{ point:{radius:0} }
+      }
+    };
+  }
+  destroyChart('lostReasonsTrend');
+  CHARTS.lostReasonsTrend = new Chart(document.getElementById('ch-lost-reasons-trend'), reasonChartCfg(lostTrend));
+  destroyChart('deniedReasonsTrend');
+  CHARTS.deniedReasonsTrend = new Chart(document.getElementById('ch-denied-reasons-trend'), reasonChartCfg(denTrend));
 }
 
 function renderReasonTable(map, total) {
