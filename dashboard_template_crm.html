@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -158,6 +159,7 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 <body class="locked">
 
 <!-- Sign-in overlay (shown until authenticated to org tenant) -->
+
 <div id="signin-overlay">
   <div class="signin-card" id="signinCard">
     <span class="pill">SUNWAVE CRM</span>
@@ -173,6 +175,7 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 </div>
 
 <!-- Topbar -->
+
 <div class="topbar">
   <div class="tb-left">
     <span class="tb-pill">SUNWAVE CRM</span>
@@ -192,6 +195,7 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 </div>
 
 <!-- Tab nav -->
+
 <nav class="tab-nav" id="tabs">
   <button class="tnav active" data-tab="overview">Overview</button>
   <button class="tnav" data-tab="pipeline">Pipeline &amp; Funnel</button>
@@ -204,9 +208,11 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 </nav>
 
 <!-- App body: filter rail left + tab content right -->
+
 <div class="app-body">
 
 <!-- Filters (left sidebar on desktop, top bar on mobile <768px) -->
+
 <div class="filters">
   <div class="filters-inner">
     <div class="filt-grp">
@@ -248,6 +254,7 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 </div>
 
 <!-- Tab panels -->
+
 <div class="tab-content">
 <div id="tab-overview"      class="tab-panel active"></div>
 <div id="tab-pipeline"      class="tab-panel"></div>
@@ -2111,5 +2118,6 @@ function bootstrapDashboard() {
   buildOverview();
 }
 </script>
+
 </body>
 </html>
