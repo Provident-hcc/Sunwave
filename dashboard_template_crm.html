@@ -465,6 +465,27 @@ function isAdmitted(o) { return o.outcome === 'Admitted' || o.outcome === 'Admit
 function isInPipe(o) { var s=(o.outcome||'').toLowerCase(); return s==='active'||s==='scheduled'; }
 function isLost(o) { return o.outcome === 'Lost' || o.outcome === 'Abandoned'; }
 
+// ── Wave 2 — funnel progression helpers ───────────────────────────────────
+// Canonical stage order. Highest stage reached is implied by outcome/dates,
+// not just the current `stage` field — an Admitted opp passed through all priors.
+var STAGE_ORDER = ['Created', 'VOB', 'Pre-Screen', 'Priority', 'Scheduled', 'Admitted'];
+function highestStageIdx(o) {
+  if (isAdmitted(o)) return STAGE_ORDER.indexOf('Admitted');
+  if (o.outcome === 'Scheduled' || o.scheduled_date) return STAGE_ORDER.indexOf('Scheduled');
+  var i = STAGE_ORDER.indexOf(o.stage);
+  return i >= 0 ? i : 0;  // unknown stage = Created floor
+}
+function reachedStage(o, stageName) {
+  return highestStageIdx(o) >= STAGE_ORDER.indexOf(stageName);
+}
+// Show-up: of opps with a scheduled_date in bucket, fraction that were Admitted
+// within `windowDays` of being scheduled. Default 14 days.
+function showedUp(o, windowDays) {
+  if (!o.scheduled_date || !isAdmitted(o) || !o.admit) return false;
+  var v = daysBetween(o.scheduled_date, o.admit);
+  return v != null && v <= (windowDays == null ? 14 : windowDays);
+}
+
 // ── Tab nav ───────────────────────────────────────────────────────────────
 document.querySelectorAll('.tnav').forEach(function(b){
   b.onclick = function() { showTab(b.dataset.tab, b); };
@@ -770,6 +791,118 @@ function buildPipeline() {
     data:{ labels:['0-1d','2-3d','4-7d','8-14d','15-30d','31-60d','60d+'],
            datasets:[{ label:'Opps', data:bins, backgroundColor:'#3dffc0', borderColor:'#0a3d5c', borderWidth:1, borderRadius:4 }] },
     options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} } }
+  });
+
+  // ── Wave 2 — funnel math (#17, #4, #18) ──────────────────────────────────
+  var g = FILTERS.gran || 'day';
+  var granLbl = g === 'week' ? 'Weekly' : (g === 'month' ? 'Monthly' : 'Daily');
+
+  // #17 — Stage funnel: count opps reaching each stage in STAGE_ORDER
+  var funnelCounts = STAGE_ORDER.map(function(s){
+    return oppsP.filter(function(o){ return reachedStage(o, s); }).length;
+  });
+  var stageToStagePct = [];
+  for (var si = 1; si < STAGE_ORDER.length; si++) {
+    var prev = funnelCounts[si-1], cur = funnelCounts[si];
+    stageToStagePct.push(prev > 0 ? (cur/prev*100).toFixed(0) + '%' : '—');
+  }
+  // % strip HTML (Stage → Stage)
+  var stripHtml = '<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:10px;font-size:12px;color:var(--muted)">';
+  for (var k = 0; k < STAGE_ORDER.length - 1; k++) {
+    stripHtml += '<span><strong style="color:var(--navy)">' + STAGE_ORDER[k] + '</strong> → <strong style="color:var(--navy)">' + STAGE_ORDER[k+1] + '</strong>: ' +
+      '<span style="color:var(--navy);font-weight:600">' + stageToStagePct[k] + '</span></span>';
+    if (k < STAGE_ORDER.length - 2) stripHtml += '<span style="opacity:0.4">·</span>';
+  }
+  stripHtml += '</div>';
+
+  // Funnel card
+  var funnelHtml = '<div class="card"><div class="card-h"><div><div class="card-title">Stage Funnel</div><div class="card-sub">Cumulative reach by stage · ' + p + ' · ' + oppsP.length + ' opps in period</div></div></div>';
+  funnelHtml += '<div class="chart-wrap"><canvas id="ch-funnel"></canvas></div>';
+  funnelHtml += stripHtml;
+  funnelHtml += '</div>';
+
+  // #4 — Conversion Rate trended: bucket by creation date, admits/created per bucket
+  var convCreated = {}, convAdmits = {};
+  oppsP.forEach(function(o){
+    var d = pd(o.co); if (!d) return;
+    var key = bucketKey(d, g);
+    convCreated[key] = (convCreated[key]||0) + 1;
+    if (isAdmitted(o)) convAdmits[key] = (convAdmits[key]||0) + 1;
+  });
+  var convKeys = Object.keys(convCreated).sort();
+  var convLabels = convKeys.map(function(k){ return bucketLabel(k, g); });
+  var convVals = convKeys.map(function(k){
+    var c = convCreated[k]||0, a = convAdmits[k]||0;
+    return c > 0 ? Number((a/c*100).toFixed(1)) : 0;
+  });
+
+  // #18 — Show-up rate trended: bucket by scheduled_date, of those scheduled in bucket,
+  // % that were admitted within 14 days of scheduling.
+  var SHOWUP_WINDOW = 14;
+  var schedByBucket = {}, showedByBucket = {};
+  oppsP.forEach(function(o){
+    if (!o.scheduled_date) return;
+    var d = pd(o.scheduled_date); if (!d) return;
+    var key = bucketKey(d, g);
+    schedByBucket[key] = (schedByBucket[key]||0) + 1;
+    if (showedUp(o, SHOWUP_WINDOW)) showedByBucket[key] = (showedByBucket[key]||0) + 1;
+  });
+  var showKeys = Object.keys(schedByBucket).sort();
+  var showLabels = showKeys.map(function(k){ return bucketLabel(k, g); });
+  var showVals = showKeys.map(function(k){
+    var s = schedByBucket[k]||0, w = showedByBucket[k]||0;
+    return s > 0 ? Number((w/s*100).toFixed(1)) : 0;
+  });
+
+  // Append all three Wave 2 cards
+  var w2html = funnelHtml;
+  w2html += '<div class="g2">';
+  w2html += '<div class="card"><div class="card-h"><div><div class="card-title">Conversion Rate</div><div class="card-sub">' + granLbl + ' · admits ÷ opps created in same bucket · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-conv-trend"></canvas></div></div>';
+  w2html += '<div class="card"><div class="card-h"><div><div class="card-title">Show-up Rate</div><div class="card-sub">' + granLbl + ' · admitted within ' + SHOWUP_WINDOW + 'd of scheduling · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-showup-trend"></canvas></div></div>';
+  w2html += '</div>';
+
+  document.getElementById('tab-pipeline').innerHTML += w2html;
+
+  // #17 funnel chart
+  destroyChart('funnel');
+  CHARTS.funnel = new Chart(document.getElementById('ch-funnel'), {
+    type:'bar',
+    data:{
+      labels: STAGE_ORDER,
+      datasets:[{ label:'Opps reaching stage', data: funnelCounts, backgroundColor:'#0a3d5c', borderRadius:4 }]
+    },
+    options:{
+      indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ beginAtZero:true, ticks:{font:{size:10}} }, y:{ ticks:{font:{size:11}} } },
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){
+        var n = ctx.parsed.x; var pct0 = funnelCounts[0] > 0 ? (n/funnelCounts[0]*100).toFixed(1) + '% of Created' : '';
+        return n + ' opps · ' + pct0;
+      } } } }
+    }
+  });
+
+  // #4 conversion trend
+  destroyChart('convTrend');
+  CHARTS.convTrend = new Chart(document.getElementById('ch-conv-trend'), {
+    type:'line',
+    data:{ labels: convLabels, datasets:[{ label:'Conversion %', data: convVals, borderColor:'#3dffc0', backgroundColor:'rgba(61,255,192,0.18)', tension:0.3, fill:true }] },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'%'} } },
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.parsed.y + '%'; } } } },
+      elements:{ point:{radius:2} }
+    }
+  });
+
+  // #18 show-up trend
+  destroyChart('showupTrend');
+  CHARTS.showupTrend = new Chart(document.getElementById('ch-showup-trend'), {
+    type:'line',
+    data:{ labels: showLabels, datasets:[{ label:'Show-up %', data: showVals, borderColor:'#4BBDE8', backgroundColor:'rgba(75,189,232,0.20)', tension:0.3, fill:true }] },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, max:100, title:{display:true,text:'%'} } },
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.parsed.y + '%'; } } } },
+      elements:{ point:{radius:2} }
+    }
   });
 }
 
@@ -1299,6 +1432,19 @@ function buildVelocity() {
   var tsaLabels = tsaKeys.map(function(k){ return bucketLabel(k, g); });
   var tsaMeds = tsaKeys.map(function(k){ return Number(median(tsaByBucket[k]).toFixed(1)); });
 
+  // #5 — Median Created → Admitted (TTA), trended (bucket by admit date)
+  var ttaByBucket = {};
+  oppsP.forEach(function(o){
+    var d = pd(o.admit); if (!d) return;
+    var v = tta(o); if (v == null) return;
+    var k = bucketKey(d, g);
+    if (!ttaByBucket[k]) ttaByBucket[k] = [];
+    ttaByBucket[k].push(v);
+  });
+  var ttaTrendKeys = Object.keys(ttaByBucket).sort();
+  var ttaTrendLabels = ttaTrendKeys.map(function(k){ return bucketLabel(k, g); });
+  var ttaTrendMeds = ttaTrendKeys.map(function(k){ return Number(median(ttaByBucket[k]).toFixed(1)); });
+
   // #15, #16 — Distribution values (period-anchored on creation)
   var ttaVals = oppsP.map(tta).filter(function(v){ return v != null; });
   var ttsVals = oppsP.map(tts).filter(function(v){ return v != null; });
@@ -1326,6 +1472,9 @@ function buildVelocity() {
 
   // Per-rep
   html += '<div class="card"><div class="card-h"><div><div class="card-title">Median Created → Scheduled by Rep</div><div class="card-sub">Fastest first · ' + p + ' · reps with ≥3 opps · top 12</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vel-tts-rep"></canvas></div></div>';
+
+  // #5 — Median TTA trended (full width, anchors on admit date)
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Median Created → Admitted (TTA)</div><div class="card-sub">' + granLbl + ' · ' + p + ' · bucketed by admit date · ' + ttaTrendKeys.length + ' buckets</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vel-tta-trend"></canvas></div></div>';
 
   // Histograms
   html += '<div class="g2">';
@@ -1371,6 +1520,17 @@ function buildVelocity() {
     options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
       scales: { x:{ beginAtZero:true, title:{display:true,text:'days'} }, y:{ ticks:{font:{size:11}} } },
       plugins: { legend:{display:false}, tooltip:dayTooltipX }
+    }
+  });
+
+  destroyChart('velTtaTrend');
+  CHARTS.velTtaTrend = new Chart(document.getElementById('ch-vel-tta-trend'), {
+    type: 'line',
+    data: { labels: ttaTrendLabels, datasets: [{ label:'Median days', data: ttaTrendMeds, borderColor:'#4BBDE8', backgroundColor:'rgba(75,189,232,0.18)', tension:0.3, fill:true }] },
+    options: { responsive:true, maintainAspectRatio:false,
+      scales: { x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'days'} } },
+      plugins: { legend:{display:false}, tooltip:dayTooltip },
+      elements: { point:{radius:2} }
     }
   });
 
