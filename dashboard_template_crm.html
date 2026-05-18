@@ -200,6 +200,7 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
   <button class="tnav" data-tab="flow">Opportunity Flow</button>
   <button class="tnav" data-tab="trends">Activity Trends</button>
   <button class="tnav" data-tab="velocity">Velocity</button>
+  <button class="tnav" data-tab="composition">Composition</button>
 </nav>
 
 <!-- App body: filter rail left + tab content right -->
@@ -255,6 +256,7 @@ body.locked > *:not(#signin-overlay){visibility:hidden}
 <div id="tab-flow"          class="tab-panel"></div>
 <div id="tab-trends"        class="tab-panel"></div>
 <div id="tab-velocity"      class="tab-panel"></div>
+<div id="tab-composition"   class="tab-panel"></div>
 </div><!-- /.tab-content -->
 
 </div><!-- /.app-body -->
@@ -475,6 +477,67 @@ function isWonOpp(o)    { return o.outcome === 'Admitted' || o.outcome === 'Admi
 // Reason field for a Denied opp (real Denied uses denied_r if present, else falls back to aband_r)
 function deniedReason(o) { return o.denied_r || o.aband_r || null; }
 
+// ── Wave 3/4 shared helpers ───────────────────────────────────────────────
+var _actsByOppCache = null;
+function actsByOpp() {
+  if (_actsByOppCache) return _actsByOppCache;
+  _actsByOppCache = {};
+  if (Array.isArray(ACTS)) ACTS.forEach(function(a){
+    if (!a.oid) return;
+    if (!_actsByOppCache[a.oid]) _actsByOppCache[a.oid] = [];
+    _actsByOppCache[a.oid].push(a);
+  });
+  return _actsByOppCache;
+}
+function firstHumanTouch(opp) {
+  var arr = actsByOpp()[opp.id] || [];
+  var first = null;
+  arr.forEach(function(a){
+    if (!isHuman(a)) return;
+    var d = pd(a.date); if (!d) return;
+    if (!first || d < first) first = d;
+  });
+  return first;
+}
+function lastHumanTouchBefore(opp, cutoff) {
+  var arr = actsByOpp()[opp.id] || [];
+  var last = null;
+  arr.forEach(function(a){
+    if (!isHuman(a)) return;
+    var d = pd(a.date); if (!d) return;
+    if (cutoff && d > cutoff) return;
+    if (!last || d > last) last = d;
+  });
+  return last;
+}
+// Generic top-N + Other series builder for a stacked-area trended chart
+function buildTopNTrended(items, dateGetter, categoryGetter, gran, topN) {
+  var byBucketByCat = {}, totals = {};
+  items.forEach(function(o){
+    var d = pd(dateGetter(o)); if (!d) return;
+    var cat = categoryGetter(o) || '(none)';
+    var key = bucketKey(d, gran);
+    if (!byBucketByCat[key]) byBucketByCat[key] = {};
+    byBucketByCat[key][cat] = (byBucketByCat[key][cat]||0) + 1;
+    totals[cat] = (totals[cat]||0) + 1;
+  });
+  var keys = Object.keys(byBucketByCat).sort();
+  var top = Object.keys(totals).sort(function(a,b){return totals[b]-totals[a];}).slice(0, topN || 5);
+  var hasOther = Object.keys(totals).length > top.length;
+  var series = top.map(function(c){
+    return { label:c, data: keys.map(function(k){ return (byBucketByCat[k]||{})[c] || 0; }) };
+  });
+  if (hasOther) {
+    series.push({ label:'Other', data: keys.map(function(k){
+      var bucket = byBucketByCat[k] || {}; var sum = 0;
+      Object.keys(bucket).forEach(function(c){ if (top.indexOf(c) < 0) sum += bucket[c]; });
+      return sum;
+    })});
+  }
+  var grandTotal = Object.keys(totals).reduce(function(s,c){ return s + totals[c]; }, 0);
+  return { labels: keys.map(function(k){ return bucketLabel(k, gran); }), series: series, total: grandTotal };
+}
+
 // ── Wave 2 — funnel progression helpers ───────────────────────────────────
 // Canonical stage order. Highest stage reached is implied by outcome/dates,
 // not just the current `stage` field — an Admitted opp passed through all priors.
@@ -516,6 +579,7 @@ function buildTab(n){
   else if (n === 'flow')          buildFlow();
   else if (n === 'trends')        buildTrends();
   else if (n === 'velocity')      buildVelocity();
+  else if (n === 'composition')   buildComposition();
 }
 
 // ── Filter handlers ───────────────────────────────────────────────────────
@@ -1020,6 +1084,120 @@ function buildPipeline() {
   CHARTS.lostReasonsTrend = new Chart(document.getElementById('ch-lost-reasons-trend'), reasonChartCfg(lostTrend));
   destroyChart('deniedReasonsTrend');
   CHARTS.deniedReasonsTrend = new Chart(document.getElementById('ch-denied-reasons-trend'), reasonChartCfg(denTrend));
+
+  // ── Wave 3/4 — volume trends, stuck-over-time, tasks ─────────────────────
+  // #1+#2+#3 Volume Trends combined: Created (by co), Admitted (by admit), Lost+Denied (by co)
+  var allKeysSet = {};
+  var volCreated = {}, volAdmit = {}, volLost = {}, volDenied = {};
+  oppsP.forEach(function(o){
+    var dc = pd(o.co);
+    if (dc) {
+      var kc = bucketKey(dc, g); volCreated[kc] = (volCreated[kc]||0) + 1; allKeysSet[kc] = true;
+      if (isLostOpp(o))   { volLost[kc]   = (volLost[kc]||0)   + 1; }
+      if (isDeniedOpp(o)) { volDenied[kc] = (volDenied[kc]||0) + 1; }
+    }
+    if (isWonOpp(o)) {
+      var da = pd(o.admit);
+      if (da) { var ka = bucketKey(da, g); volAdmit[ka] = (volAdmit[ka]||0) + 1; allKeysSet[ka] = true; }
+    }
+  });
+  var volKeys = Object.keys(allKeysSet).sort();
+  var volLabels = volKeys.map(function(k){ return bucketLabel(k, g); });
+  function fill(map){ return volKeys.map(function(k){ return map[k] || 0; }); }
+
+  // #9 Stuck Opps over time — last 12 weeks ending today
+  // For each weekly checkpoint, count currently-active opps that had no human activity in the prior 7+ days as of that checkpoint
+  var stuckWeeks = [];
+  var nowDay = new Date(); nowDay.setHours(0,0,0,0);
+  for (var wi = 11; wi >= 0; wi--) {
+    var t = new Date(nowDay); t.setDate(nowDay.getDate() - (wi*7));
+    stuckWeeks.push(t);
+  }
+  var stuckCounts = stuckWeeks.map(function(t){
+    var count = 0;
+    OPPS.forEach(function(o){
+      if (!isInPipe(o)) return;
+      if (!outcomeMatch(o)) return;
+      var c = pd(o.co); if (!c || c > t) return;
+      var last = lastHumanTouchBefore(o, t);
+      var ref = last || c;
+      if ((t - ref) / 86400000 >= 7) count++;
+    });
+    return count;
+  });
+  var stuckLabels = stuckWeeks.map(function(t){ return (t.getMonth()+1) + '/' + t.getDate(); });
+
+  // #10 Open + Overdue Tasks — bucket by due date within period
+  var taskOpenByBucket = {}, taskOverdueByBucket = {};
+  if (Array.isArray(TASKS)) TASKS.forEach(function(t){
+    if (!t.due) return;
+    var d = pd(t.due); if (!d) return;
+    if (!inPeriod(t.due)) return;
+    var k = bucketKey(d, g);
+    if (t.is_open) {
+      taskOpenByBucket[k] = (taskOpenByBucket[k]||0) + 1;
+      if (d < nowDay) taskOverdueByBucket[k] = (taskOverdueByBucket[k]||0) + 1;
+    }
+  });
+  var taskKeys = Object.keys(taskOpenByBucket).sort();
+  var taskLabels = taskKeys.map(function(k){ return bucketLabel(k, g); });
+
+  var w3html = '<div class="card"><div class="card-h"><div><div class="card-title">Volume Trends</div><div class="card-sub">' + granLbl + ' · Created · Admitted · Lost · Denied · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vol-trends"></canvas></div></div>';
+  w3html += '<div class="g2">';
+  w3html += '<div class="card"><div class="card-h"><div><div class="card-title">Stuck Opportunities Over Time</div><div class="card-sub">Weekly · currently-active opps with no human touch in prior 7d · last 12 weeks</div></div></div><div class="chart-wrap-tall"><canvas id="ch-stuck-trend"></canvas></div></div>';
+  w3html += '<div class="card"><div class="card-h"><div><div class="card-title">Open &amp; Overdue Tasks</div><div class="card-sub">' + granLbl + ' · by due date · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-tasks-trend"></canvas></div></div>';
+  w3html += '</div>';
+  document.getElementById('tab-pipeline').innerHTML += w3html;
+
+  // Volume Trends chart
+  destroyChart('volTrends');
+  CHARTS.volTrends = new Chart(document.getElementById('ch-vol-trends'), {
+    type:'line',
+    data:{
+      labels: volLabels,
+      datasets: [
+        { label:'Created',  data: fill(volCreated),  borderColor:'#0a3d5c', backgroundColor:'rgba(10,61,92,0.10)',  tension:0.3, fill:false },
+        { label:'Admitted', data: fill(volAdmit),    borderColor:'#10b981', backgroundColor:'rgba(16,185,129,0.10)', tension:0.3, fill:false },
+        { label:'Lost',     data: fill(volLost),     borderColor:'#f59e0b', backgroundColor:'rgba(245,158,11,0.10)', tension:0.3, fill:false },
+        { label:'Denied',   data: fill(volDenied),   borderColor:'#ef4444', backgroundColor:'rgba(239,68,68,0.10)',  tension:0.3, fill:false }
+      ]
+    },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'count'} } },
+      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{mode:'index',intersect:false} },
+      elements:{ point:{radius:2} }
+    }
+  });
+
+  // Stuck Over Time
+  destroyChart('stuckTrend');
+  CHARTS.stuckTrend = new Chart(document.getElementById('ch-stuck-trend'), {
+    type:'line',
+    data:{ labels: stuckLabels, datasets:[{ label:'Stuck opps', data: stuckCounts, borderColor:'#f59e0b', backgroundColor:'rgba(245,158,11,0.25)', tension:0.3, fill:true }] },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:10}} }, y:{ beginAtZero:true, title:{display:true,text:'count'} } },
+      plugins:{ legend:{display:false} },
+      elements:{ point:{radius:2} }
+    }
+  });
+
+  // Tasks Trended
+  destroyChart('tasksTrend');
+  CHARTS.tasksTrend = new Chart(document.getElementById('ch-tasks-trend'), {
+    type:'line',
+    data:{
+      labels: taskLabels,
+      datasets: [
+        { label:'Open', data: taskKeys.map(function(k){ return taskOpenByBucket[k]||0; }), borderColor:'#4BBDE8', backgroundColor:'rgba(75,189,232,0.20)', tension:0.3, fill:true },
+        { label:'Overdue', data: taskKeys.map(function(k){ return taskOverdueByBucket[k]||0; }), borderColor:'#ef4444', backgroundColor:'rgba(239,68,68,0.20)', tension:0.3, fill:true }
+      ]
+    },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'count'} } },
+      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{mode:'index',intersect:false} },
+      elements:{ point:{radius:2} }
+    }
+  });
 }
 
 function renderReasonTable(map, total) {
@@ -1470,6 +1648,111 @@ function buildTrends() {
       elements: { point:{radius:0} }
     }
   });
+
+  // ── Wave 3/4 — acts/opp · DoW analysis · opp-arrival hour heatmap ────────
+  var oppsP_trends = periodOpps();
+
+  // #7 — Activities per Opportunity per period (ratio per bucket)
+  var actsPerBucket = {}, oppsPerBucket = {};
+  actsP.forEach(function(a){
+    var d = pd(a.date); if (!d) return;
+    var k = bucketKey(d, g); actsPerBucket[k] = (actsPerBucket[k]||0) + 1;
+  });
+  oppsP_trends.forEach(function(o){
+    var d = pd(o.co); if (!d) return;
+    var k = bucketKey(d, g); oppsPerBucket[k] = (oppsPerBucket[k]||0) + 1;
+  });
+  var apoSet = {};
+  Object.keys(actsPerBucket).forEach(function(k){ apoSet[k] = true; });
+  Object.keys(oppsPerBucket).forEach(function(k){ apoSet[k] = true; });
+  var apoKeys = Object.keys(apoSet).sort();
+  var apoLabels = apoKeys.map(function(k){ return bucketLabel(k, g); });
+  var apoVals = apoKeys.map(function(k){
+    var a = actsPerBucket[k]||0, o = oppsPerBucket[k]||0;
+    return o > 0 ? Number((a/o).toFixed(2)) : 0;
+  });
+
+  // #20 — Admits by DoW + Conversion by DoW
+  var dowAdmits = [0,0,0,0,0,0,0];      // Sun..Sat
+  var dowCreated = [0,0,0,0,0,0,0];
+  var dowAdmittedFromCreation = [0,0,0,0,0,0,0];
+  oppsP_trends.forEach(function(o){
+    var dc = pd(o.co);
+    if (dc) {
+      dowCreated[dc.getDay()]++;
+      if (isAdmitted(o)) dowAdmittedFromCreation[dc.getDay()]++;
+    }
+    if (isAdmitted(o) && o.admit) {
+      var da = pd(o.admit); if (da) dowAdmits[da.getDay()]++;
+    }
+  });
+  var dowLabels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var dowConvRate = dowCreated.map(function(c, i){
+    return c > 0 ? Number((dowAdmittedFromCreation[i]/c*100).toFixed(1)) : 0;
+  });
+
+  // #21 — Opp arrival by hour-of-day heatmap (same grid as activity heatmap)
+  var oppGrid = []; for (var i=0;i<24;i++){ oppGrid.push([0,0,0,0,0,0,0]); }
+  oppsP_trends.forEach(function(o){
+    var d = pd(o.co); if (!d) return;
+    oppGrid[d.getHours()][d.getDay()]++;
+  });
+  var oppMaxCell = 1; oppGrid.forEach(function(row){ row.forEach(function(v){ if(v>oppMaxCell) oppMaxCell=v; }); });
+  var oppHmHtml = '<div class="hm"><div></div>';
+  dowLabels.forEach(function(l){ oppHmHtml += '<div class="hm-lbl" style="text-align:center;justify-content:center">'+l+'</div>'; });
+  for (var ohr=6; ohr<23; ohr++) {
+    var olbl = ohr === 0 ? '12am' : (ohr<12?ohr+'am':ohr===12?'12pm':(ohr-12)+'pm');
+    oppHmHtml += '<div class="hm-lbl">'+olbl+'</div>';
+    for (var od=0; od<7; od++) {
+      var ov = oppGrid[ohr][od];
+      var oalpha = oppMaxCell > 0 ? Math.min(1, ov/oppMaxCell) : 0;
+      var ocolor = 'rgba(10,61,92,' + (oalpha * 0.85 + 0.05) + ')';
+      var otxt = ov > 0 ? ov : '';
+      var ofontColor = oalpha > 0.5 ? '#fff' : 'var(--text)';
+      oppHmHtml += '<div class="hm-cell" style="background:'+ocolor+';color:'+ofontColor+'">'+otxt+'</div>';
+    }
+  }
+  oppHmHtml += '</div>';
+
+  // Append all Wave 3/4 cards to trends tab
+  var w3trend = '<div class="card"><div class="card-h"><div><div class="card-title">Activities per Opportunity</div><div class="card-sub">' + granLbl + ' · acts ÷ opps created per bucket · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-acts-per-opp"></canvas></div></div>';
+  w3trend += '<div class="g2">';
+  w3trend += '<div class="card"><div class="card-h"><div><div class="card-title">Admits by Day-of-Week</div><div class="card-sub">When admissions land · ' + p + '</div></div></div><div class="chart-wrap"><canvas id="ch-dow-admits"></canvas></div></div>';
+  w3trend += '<div class="card"><div class="card-h"><div><div class="card-title">Conversion Rate by Day-of-Week</div><div class="card-sub">% admitted by DoW of creation · ' + p + '</div></div></div><div class="chart-wrap"><canvas id="ch-dow-conv"></canvas></div></div>';
+  w3trend += '</div>';
+  w3trend += '<div class="card"><div class="card-h"><div><div class="card-title">Opportunity Arrival — Hour × Day</div><div class="card-sub">When new opps come in · ' + p + '</div></div></div>' + oppHmHtml + '</div>';
+  document.getElementById('tab-trends').innerHTML += w3trend;
+
+  destroyChart('actsPerOpp');
+  CHARTS.actsPerOpp = new Chart(document.getElementById('ch-acts-per-opp'), {
+    type:'line',
+    data:{ labels: apoLabels, datasets:[{ label:'Acts/Opp', data: apoVals, borderColor:'#0a3d5c', backgroundColor:'rgba(10,61,92,0.15)', tension:0.3, fill:true }] },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'acts per opp'} } },
+      plugins:{ legend:{display:false} },
+      elements:{ point:{radius:2} }
+    }
+  });
+
+  destroyChart('dowAdmits');
+  CHARTS.dowAdmits = new Chart(document.getElementById('ch-dow-admits'), {
+    type:'bar',
+    data:{ labels: dowLabels, datasets:[{ label:'Admits', data: dowAdmits, backgroundColor:'#10b981', borderRadius:4 }] },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:11}} }, y:{ beginAtZero:true, title:{display:true,text:'count'} } },
+      plugins:{ legend:{display:false} }
+    }
+  });
+
+  destroyChart('dowConv');
+  CHARTS.dowConv = new Chart(document.getElementById('ch-dow-conv'), {
+    type:'bar',
+    data:{ labels: dowLabels, datasets:[{ label:'Conversion %', data: dowConvRate, backgroundColor:'#3dffc0', borderRadius:4 }] },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:11}} }, y:{ beginAtZero:true, title:{display:true,text:'%'} } },
+      plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.parsed.y + '%'; } } } }
+    }
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -1561,6 +1844,49 @@ function buildVelocity() {
   var ttaTrendLabels = ttaTrendKeys.map(function(k){ return bucketLabel(k, g); });
   var ttaTrendMeds = ttaTrendKeys.map(function(k){ return Number(median(ttaByBucket[k]).toFixed(1)); });
 
+  // #6 — Median First-Touch Time trended (creation → first human activity)
+  var ftByBucket = {};
+  oppsP.forEach(function(o){
+    var c = pd(o.co); if (!c) return;
+    var first = firstHumanTouch(o); if (!first) return;
+    var hours = (first - c) / 3600000;  // in hours (often <1 day, hours is more meaningful)
+    if (hours < 0) return;
+    var k = bucketKey(c, g);
+    if (!ftByBucket[k]) ftByBucket[k] = [];
+    ftByBucket[k].push(hours);
+  });
+  var ftKeys = Object.keys(ftByBucket).sort();
+  var ftLabels = ftKeys.map(function(k){ return bucketLabel(k, g); });
+  var ftMeds = ftKeys.map(function(k){ return Number(median(ftByBucket[k]).toFixed(1)); });
+
+  // #19 — Cohort decay: by cohort month, % admitted by day 3/7/14/30
+  var cohorts = {};
+  filteredOpps().forEach(function(o){
+    var c = pd(o.co); if (!c) return;
+    var m = c.toISOString().slice(0,7);
+    if (!cohorts[m]) cohorts[m] = { size:0, d3:0, d7:0, d14:0, d30:0 };
+    cohorts[m].size++;
+    if (isAdmitted(o) && o.admit) {
+      var days = daysBetween(o.co, o.admit);
+      if (days == null) return;
+      if (days <= 3)  cohorts[m].d3++;
+      if (days <= 7)  cohorts[m].d7++;
+      if (days <= 14) cohorts[m].d14++;
+      if (days <= 30) cohorts[m].d30++;
+    }
+  });
+  // Last 6 cohorts with size > 0
+  var cohortKeys = Object.keys(cohorts).filter(function(k){ return cohorts[k].size > 0; }).sort().slice(-6);
+  var cohortLabels = cohortKeys.map(function(k){
+    var parts = k.split('-'); var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return months[parseInt(parts[1],10)-1] + ' ' + parts[0].slice(2);
+  });
+  function cohortPct(field){
+    return cohortKeys.map(function(k){
+      var c = cohorts[k]; return c.size > 0 ? Number((c[field]/c.size*100).toFixed(1)) : 0;
+    });
+  }
+
   // #15, #16 — Distribution values (period-anchored on creation)
   var ttaVals = oppsP.map(tta).filter(function(v){ return v != null; });
   var ttsVals = oppsP.map(tts).filter(function(v){ return v != null; });
@@ -1591,6 +1917,12 @@ function buildVelocity() {
 
   // #5 — Median TTA trended (full width, anchors on admit date)
   html += '<div class="card"><div class="card-h"><div><div class="card-title">Median Created → Admitted (TTA)</div><div class="card-sub">' + granLbl + ' · ' + p + ' · bucketed by admit date · ' + ttaTrendKeys.length + ' buckets</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vel-tta-trend"></canvas></div></div>';
+
+  // #6 — Median First-Touch Time trended
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Median First-Touch Time</div><div class="card-sub">' + granLbl + ' · hours from opp creation to first human activity · ' + p + ' · ' + ftKeys.length + ' buckets</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vel-first-touch"></canvas></div></div>';
+
+  // #19 — Cohort decay curve
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Cohort Decay — Admit Conversion by Day</div><div class="card-sub">% of opps admitted within 3 / 7 / 14 / 30 days of creation · last 6 monthly cohorts</div></div></div><div class="chart-wrap-tall"><canvas id="ch-vel-cohort"></canvas></div></div>';
 
   // Histograms
   html += '<div class="g2">';
@@ -1650,6 +1982,36 @@ function buildVelocity() {
     }
   });
 
+  destroyChart('velFirstTouch');
+  CHARTS.velFirstTouch = new Chart(document.getElementById('ch-vel-first-touch'), {
+    type: 'line',
+    data: { labels: ftLabels, datasets: [{ label:'Median hours', data: ftMeds, borderColor:'#3dffc0', backgroundColor:'rgba(61,255,192,0.22)', tension:0.3, fill:true }] },
+    options: { responsive:true, maintainAspectRatio:false,
+      scales: { x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ beginAtZero:true, title:{display:true,text:'hours'} } },
+      plugins: { legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return ctx.parsed.y + ' hours'; } } } },
+      elements: { point:{radius:2} }
+    }
+  });
+
+  destroyChart('velCohort');
+  CHARTS.velCohort = new Chart(document.getElementById('ch-vel-cohort'), {
+    type:'line',
+    data:{
+      labels: cohortLabels,
+      datasets: [
+        { label:'≤3 days',  data: cohortPct('d3'),  borderColor:'#3dffc0', backgroundColor:'rgba(61,255,192,0.15)',  tension:0.3, fill:false },
+        { label:'≤7 days',  data: cohortPct('d7'),  borderColor:'#4BBDE8', backgroundColor:'rgba(75,189,232,0.15)',  tension:0.3, fill:false },
+        { label:'≤14 days', data: cohortPct('d14'), borderColor:'#0a3d5c', backgroundColor:'rgba(10,61,92,0.15)',    tension:0.3, fill:false },
+        { label:'≤30 days', data: cohortPct('d30'), borderColor:'#8b5cf6', backgroundColor:'rgba(139,92,246,0.15)',  tension:0.3, fill:false }
+      ]
+    },
+    options:{ responsive:true, maintainAspectRatio:false,
+      scales:{ x:{ ticks:{font:{size:11}} }, y:{ beginAtZero:true, max:100, title:{display:true,text:'% admitted'} } },
+      plugins:{ legend:{position:'top',labels:{font:{size:11}}}, tooltip:{mode:'index',intersect:false,callbacks:{label:function(ctx){return ctx.dataset.label + ': ' + ctx.parsed.y + '%';}}} },
+      elements:{ point:{radius:3} }
+    }
+  });
+
   var bucketLabels = VEL_BUCKETS.map(function(b){ return b.label; });
 
   destroyChart('velTtaHist');
@@ -1671,6 +2033,75 @@ function buildVelocity() {
       plugins: { legend:{display:false} }
     }
   });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// COMPOSITION  (#11 referral sources · #22 admit mix · #23 ROI shell)
+// ──────────────────────────────────────────────────────────────────
+function buildComposition() {
+  var p = FILTERS.period;
+  var g = FILTERS.gran || 'day';
+  var granLbl = g === 'week' ? 'Weekly' : (g === 'month' ? 'Monthly' : 'Daily');
+  var oppsP = periodOpps();
+  var admits = oppsP.filter(isWonOpp);
+
+  // #11 — Top 5 Referral Sources stacked area (all opps in period, by creation)
+  var refTrend  = buildTopNTrended(oppsP,  function(o){ return o.co; }, function(o){ return o.ref; }, g, 5);
+  // #22a — Insurance mix on admits (by admit date)
+  var insTrend  = buildTopNTrended(admits, function(o){ return o.admit; }, function(o){ return o.ins; }, g, 5);
+  // #22b — LOC mix on admits
+  var locTrend  = buildTopNTrended(admits, function(o){ return o.admit; }, function(o){ return o.loc; }, g, 5);
+  // #22c — Referral type mix on admits
+  var refTypeAdmit = buildTopNTrended(admits, function(o){ return o.admit; }, function(o){ return o.ref; }, g, 5);
+
+  // KPI strip
+  var html = '<div class="kpis">';
+  html += kpi('navy',  'Opps in Period', oppsP.length);
+  html += kpi('blue',  'Admits in Period', admits.length, pct(admits.length, oppsP.length) + ' of opps');
+  html += kpi('teal',  'Distinct Referral Sources', Object.keys(refTrend.series.reduce(function(s,x){ s[x.label]=1; return s; }, {})).length);
+  html += kpi('amber', 'Period · Granularity', p + ' · ' + granLbl);
+  html += '</div>';
+
+  // #11 Top referral sources (all opps)
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Top 5 Referral Sources</div><div class="card-sub">' + granLbl + ' · all opps created · stacked area · ' + p + ' · ' + refTrend.total + ' opps</div></div></div><div class="chart-wrap-tall"><canvas id="ch-comp-ref"></canvas></div></div>';
+
+  // #22 trio — composition on ADMITS
+  html += '<div class="g2">';
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Insurance Mix on Admits</div><div class="card-sub">' + granLbl + ' · top 5 stacked · ' + admits.length + ' admits · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-comp-ins"></canvas></div></div>';
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">LOC Mix on Admits</div><div class="card-sub">' + granLbl + ' · level of care · top 5 stacked · ' + admits.length + ' admits · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-comp-loc"></canvas></div></div>';
+  html += '</div>';
+
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Referral Type Mix on Admits</div><div class="card-sub">' + granLbl + ' · referral channel of admitted opps · top 5 stacked · ' + p + '</div></div></div><div class="chart-wrap-tall"><canvas id="ch-comp-ref-admits"></canvas></div></div>';
+
+  // #23 Cost-per-Lead / Cost-per-Admit shell — no spend data yet
+  html += '<div class="card"><div class="card-h"><div><div class="card-title">Cost per Lead · Cost per Admit</div><div class="card-sub">By referral source · ' + p + '</div></div></div>';
+  html += '<div class="empty" style="padding:32px 16px;text-align:center;color:var(--muted);font-size:13px">No marketing spend data connected yet.<br/><span style="font-size:11px;opacity:0.8">When a spend CSV or feed is wired in, this card will populate with $/lead and $/admit by source.</span></div>';
+  html += '</div>';
+
+  document.getElementById('tab-composition').innerHTML = html;
+
+  // Generic stacked-area renderer for the four reason-style charts
+  var palette = ['#0a3d5c','#3dffc0','#4BBDE8','#f59e0b','#8b5cf6','#94a3b8'];
+  function stackedAreaCfg(t) {
+    return {
+      type:'line',
+      data:{ labels: t.labels, datasets: t.series.map(function(s, i){
+        return { label:s.label, data:s.data,
+          borderColor: palette[i % palette.length],
+          backgroundColor: palette[i % palette.length] + 'AA',
+          fill:true, tension:0.3 };
+      }) },
+      options:{ responsive:true, maintainAspectRatio:false,
+        scales:{ x:{ ticks:{font:{size:9},maxTicksLimit:12} }, y:{ stacked:true, beginAtZero:true, title:{display:true,text:'count'} } },
+        plugins:{ legend:{position:'top',labels:{font:{size:11},boxWidth:12}}, tooltip:{mode:'index',intersect:false} },
+        elements:{ point:{radius:0} }
+      }
+    };
+  }
+  destroyChart('compRef');       CHARTS.compRef       = new Chart(document.getElementById('ch-comp-ref'),         stackedAreaCfg(refTrend));
+  destroyChart('compIns');       CHARTS.compIns       = new Chart(document.getElementById('ch-comp-ins'),         stackedAreaCfg(insTrend));
+  destroyChart('compLoc');       CHARTS.compLoc       = new Chart(document.getElementById('ch-comp-loc'),         stackedAreaCfg(locTrend));
+  destroyChart('compRefAdmits'); CHARTS.compRefAdmits = new Chart(document.getElementById('ch-comp-ref-admits'),  stackedAreaCfg(refTypeAdmit));
 }
 
 // ── Initial render — gated by sign-in ─────────────────────────────────────
