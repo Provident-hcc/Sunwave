@@ -45,11 +45,14 @@ jobs:
       - name: Build CRM dashboard
         run: python build_crm.py
 
+      - name: Build UR dashboard
+        run: python build_ur.py
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add index.html Sunwave_Dashboard.html crm/index.html
+          git add index.html Sunwave_Dashboard.html crm/index.html ur/index.html
           if git diff --cached --quiet; then
             echo "No changes to dashboard; skipping commit."
           else
