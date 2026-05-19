@@ -29,6 +29,19 @@ print(f'[UR] Loading {XLSX}...')
 xl = pd.ExcelFile(XLSX)
 print(f'[UR] Sheets in workbook: {xl.sheet_names}')
 
+# ── Diagnostic: dump the actual column list of every UR-relevant sheet ────
+for sheet_name in ['Report Auth', 'Report UR Changes', 'Census_Admitted', 'Census', 'GroupNotes']:
+    if sheet_name in xl.sheet_names:
+        try:
+            cols = pd.read_excel(XLSX, sheet_name=sheet_name, nrows=0).columns.tolist()
+            print(f'[UR-SCHEMA] {sheet_name} ({len(cols)} columns):')
+            for i, c in enumerate(cols, 1):
+                print(f'[UR-SCHEMA]   {i:3d}. {c}')
+        except Exception as e:
+            print(f'[UR-SCHEMA] {sheet_name} — error: {e}')
+    else:
+        print(f'[UR-SCHEMA] {sheet_name} — NOT IN WORKBOOK')
+
 
 def safe_str(v):
     if v is None:
