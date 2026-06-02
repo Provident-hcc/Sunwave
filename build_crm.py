@@ -61,7 +61,26 @@ def pick_sheet(*names):
 
 # ── Process Opportunities ───────────────────────────────────────────────────
 print('[CRM] Loading Opportunity sheet...')
-odf = pick_sheet('Opportunity', 'Opportunities', 'Opportunities by Created Date', 'Opportunities Active')
+
+# Diagnostic: inspect ALL opportunity sheets to find the freshest one
+for _sn in ('Opportunities', 'Opportunities by Created Date', 'Opportunities Active', 'Opportunity'):
+    if _sn in xl.sheet_names:
+        try:
+            _df = pd.read_excel(XLSX, sheet_name=_sn)
+            _max = None
+            for _c in ('created_on', 'created on', 'Created On'):
+                if _c in _df.columns:
+                    _d = pd.to_datetime(_df[_c], errors='coerce').max()
+                    _max = _d
+                    break
+            print(f'[CRM-OPP-DIAG] {_sn}: {len(_df)} rows · max created_on = {_max}')
+        except Exception as _e:
+            print(f'[CRM-OPP-DIAG] {_sn}: error {_e}')
+
+# Reorder pick order: try the freshness-maintained sheet FIRST.
+# 'Opportunities by Created Date' is typically a date-sorted recent view
+# in Sunwave Power Query exports.
+odf = pick_sheet('Opportunities by Created Date', 'Opportunities', 'Opportunity', 'Opportunities Active')
 # Coerce date columns
 for c in ('created_on', 'admission_date'):
     if c in odf.columns:
